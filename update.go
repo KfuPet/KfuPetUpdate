@@ -92,7 +92,8 @@ type serverSource struct{}
 func newServerSource() *serverSource { return &serverSource{} }
 
 func (*serverSource) fetchLatest(context.Context) (*releaseInfo, error) {
-	// 尚未接入服务器，返回空结果，由 updateChecker 尝试下一个源。
+	// 尚未接入服务器（空壳占位）：返回 (nil, nil)，表示跳过该源，不视为失败。
+	// 真实接入后，网络/接口异常应返回具体 error，便于上层汇总提示。
 	return nil, nil
 }
 
@@ -116,24 +117,30 @@ func newUpdateChecker() *updateChecker {
 	}
 }
 
-// check 返回第一个可用更新源的结果；
-// GitHub 与自建服务器都失败时，返回包含各自失败原因的错误。
+// check 返回第一个可用更新源的结果。
+// 只有空壳/占位性质的源（返回 nil 且无错误）会被跳过，不算失败；
+// 所有真实源都失败时，返回包含各自失败原因的错误。
 func (c *updateChecker) check(ctx context.Context) (*releaseInfo, error) {
 	var fails []string
 	for _, ns := range c.sources {
 		rel, err := ns.source.fetchLatest(ctx)
-		if err == nil && rel != nil {
-			return rel, nil // 当前源成功，直接返回
-		}
 		if err != nil {
 			fails = append(fails, fmt.Sprintf("%s源：%v", ns.name, err))
-		} else {
-			fails = append(fails, fmt.Sprintf("%s源：暂无可用发布数据", ns.name))
+			continue
+		}
+		if rel != nil {
+			return rel, nil // 当前源成功，直接返回
 		}
 	}
 
-	if len(fails) == 0 {
+	switch len(fails) {
+	case 0:
 		return nil, fmt.Errorf("暂无可用更新源")
+	case 1:
+		// 当前自建服务器还是空壳，实际只有 GitHub 一个真实源，
+		// 此时直接透出它的失败原因（默认即网络类错误）。
+		return nil, fmt.Errorf("%s", fails[0])
+	default:
+		return nil, fmt.Errorf("所有更新源均不可用（%s）", strings.Join(fails, "；"))
 	}
-	return nil, fmt.Errorf("GitHub 与自建服务器均不可用（%s）", strings.Join(fails, "；"))
 }

@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -39,7 +40,6 @@ func (l *vfillLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(l.width, h)
 }
 
-// linkText 是一个无内边距的白色下划线文字，点击后打开指定链接。
 type linkText struct {
 	widget.BaseWidget
 	text *canvas.Text
@@ -177,23 +177,34 @@ func checkingView() fyne.CanvasObject {
 	))
 }
 
-// failedView 组装查询失败的闪屏：提示 + 重试按钮。
-func failedView(onRetry func()) fyne.CanvasObject {
+// failedView 组装查询失败的闪屏：默认网络错误提示 + 透出具体原因 + 重试按钮。
+func failedView(err error, onRetry func()) fyne.CanvasObject {
 	title := widget.NewLabelWithStyle("无法获取当前版本信息", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	hint := smallText("请检查网络连接后重试")
+
+	hint := widget.NewLabel("请检查网络连接后重试")
+	hint.Alignment = fyne.TextAlignCenter
+	hint.Wrapping = fyne.TextWrapWord
+
+	// 透出真实失败原因
+	detail := widget.NewLabel("原因：" + err.Error())
+	detail.Alignment = fyne.TextAlignCenter
+	detail.Wrapping = fyne.TextWrapWord
+
 	retry := widget.NewButton("重试", onRetry)
 
-	return container.NewCenter(container.NewVBox(
-		container.NewCenter(title),
-		container.NewCenter(hint),
+	return container.NewVBox(
+		layout.NewSpacer(),
+		title,
+		hint,
+		detail,
 		container.NewCenter(retry),
-	))
+		layout.NewSpacer(),
+	)
 }
 
 func main() {
 	a := app.New()
 	w := a.NewWindow("KfuPetUpdate")
-	// 长方形界面
 	w.Resize(fyne.NewSize(600, 360))
 	w.SetFixedSize(true)
 	w.CenterOnScreen()
@@ -205,8 +216,8 @@ func main() {
 	}
 
 	var startVersionCheck func()
-	showFailed := func() {
-		w.SetContent(failedView(func() { startVersionCheck() }))
+	showFailed := func(err error) {
+		w.SetContent(failedView(err, func() { startVersionCheck() }))
 	}
 
 	// 打开后：先显示转圈圈闪屏查询当前版本信息，
@@ -227,7 +238,7 @@ func main() {
 
 			fyne.Do(func() {
 				if err != nil {
-					showFailed()
+					showFailed(err)
 					return
 				}
 				showMain(rel)
