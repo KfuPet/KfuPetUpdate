@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -95,37 +96,44 @@ func (*serverSource) fetchLatest(context.Context) (*releaseInfo, error) {
 	return nil, nil
 }
 
-// updateChecker 依次尝试多个更新源（GitHub → 自建服务器）做容错。
+// namedSource 是带名称的更新源，失败时用于输出可读的错误信息。
+type namedSource struct {
+	name   string
+	source updateSource
+}
+
+// updateChecker 依次尝试多个更新源：GitHub 优先，失败时回退到自建服务器。
 type updateChecker struct {
-	sources []updateSource
+	sources []namedSource
 }
 
 func newUpdateChecker() *updateChecker {
 	return &updateChecker{
-		sources: []updateSource{
-			newGitHubSource(),
-			newServerSource(),
+		sources: []namedSource{
+			{name: "GitHub", source: newGitHubSource()},
+			{name: "自建服务器", source: newServerSource()},
 		},
 	}
 }
 
-// check 返回第一个可用的远端发布信息；所有更新源均不可用时返回错误。
+// check 返回第一个可用更新源的结果；
+// GitHub 与自建服务器都失败时，返回包含各自失败原因的错误。
 func (c *updateChecker) check(ctx context.Context) (*releaseInfo, error) {
-	var lastErr error
-	for _, src := range c.sources {
-		rel, err := src.fetchLatest(ctx)
+	var fails []string
+	for _, ns := range c.sources {
+		rel, err := ns.source.fetchLatest(ctx)
+		if err == nil && rel != nil {
+			return rel, nil // 当前源成功，直接返回
+		}
 		if err != nil {
-			lastErr = err
-			continue // 当前源失败，尝试下一个源
+			fails = append(fails, fmt.Sprintf("%s源：%v", ns.name, err))
+		} else {
+			fails = append(fails, fmt.Sprintf("%s源：暂无可用发布数据", ns.name))
 		}
-		if rel == nil {
-			lastErr = fmt.Errorf("更新源暂无可用数据")
-			continue
-		}
-		return rel, nil
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("暂无可用更新源")
+
+	if len(fails) == 0 {
+		return nil, fmt.Errorf("暂无可用更新源")
 	}
-	return nil, lastErr
+	return nil, fmt.Errorf("GitHub 与自建服务器均不可用（%s）", strings.Join(fails, "；"))
 }
