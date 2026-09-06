@@ -1,0 +1,3 @@
+// Windows 资源定义：为 KfuPetUpdate.exe 设置图标。
+// 通过 windres 编译为 *.syso，go build 会自动链入可执行文件。
+1 ICON "icon/logo_256x256.ico"

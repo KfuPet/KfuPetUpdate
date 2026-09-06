@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"image/color"
+	_ "image/png"
 	"net/url"
 	"time"
 
@@ -15,6 +17,14 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+//go:embed icon/Startlogo.png
+var startLogoPNG []byte
+
+//go:embed icon/appicon.png
+var appIconPNG []byte
+
+//go:generate windres app.rc -O coff -o app_windows_amd64.syso
+
 type vfillLayout struct {
 	width      float32 // 左侧栏整体宽度
 	itemHeight float32 // 每个按钮的高度
@@ -24,7 +34,7 @@ type vfillLayout struct {
 func (l *vfillLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 	n := float32(len(objects))
 	total := n*l.itemHeight + (n-1)*l.spacing
-	bottomMargin := float32(24)
+	bottomMargin := float32(16)
 	y := size.Height - total - bottomMargin
 	leftMargin := float32(16)
 	for _, o := range objects {
@@ -135,7 +145,7 @@ func publishLine(rel *releaseInfo) string {
 	return "发布于 " + rel.PublishedAt.Local().Format("2006-01-02")
 }
 
-// buildMainUI 组装主界面：左侧操作按钮 + 右侧最新版本信息 + 底部版权。
+// buildMainUI 组装主界面
 func buildMainUI(rel *releaseInfo) fyne.CanvasObject {
 	installBtn := widget.NewButton("安装", func() {
 		// TODO: 安装逻辑
@@ -147,12 +157,18 @@ func buildMainUI(rel *releaseInfo) fyne.CanvasObject {
 		// TODO: 卸载逻辑
 	})
 
-	// 左侧：三个长条形按钮，横向填满、垂直居中
-	left := container.New(&vfillLayout{
+	// 上方图标：从资源嵌入的 KfuPet Logo
+	logoImage := canvas.NewImageFromResource(fyne.NewStaticResource("Startlogo.png", startLogoPNG))
+	logoImage.FillMode = canvas.ImageFillContain
+	logoArea := container.NewCenter(container.NewGridWrap(fyne.NewSize(120, 120), logoImage))
+
+	// 左侧：上方图标 + 下方三个长条形按钮
+	buttons := container.New(&vfillLayout{
 		width:      180,
 		itemHeight: 48,
 		spacing:    20,
 	}, installBtn, upgradeBtn, uninstallBtn)
+	left := container.NewBorder(logoArea, nil, nil, nil, buttons)
 
 	// 右侧：展示从远端查询到的最新版本信息
 	right := buildVersionPanel(rel)
@@ -177,7 +193,7 @@ func checkingView() fyne.CanvasObject {
 	))
 }
 
-// failedView 组装查询失败的闪屏：默认网络错误提示 + 透出具体原因 + 重试按钮。
+// failedView 组装查询失败的闪屏
 func failedView(err error, onRetry func()) fyne.CanvasObject {
 	title := widget.NewLabelWithStyle("无法获取当前版本信息", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
@@ -204,6 +220,9 @@ func failedView(err error, onRetry func()) fyne.CanvasObject {
 
 func main() {
 	a := app.New()
+	// 程序图标：窗口标题栏/任务栏使用（PNG）
+	a.SetIcon(fyne.NewStaticResource("appicon.png", appIconPNG))
+
 	w := a.NewWindow("KfuPetUpdate")
 	w.Resize(fyne.NewSize(600, 360))
 	w.SetFixedSize(true)
