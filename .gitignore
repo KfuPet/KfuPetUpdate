@@ -8,6 +8,9 @@
 *.so
 *.dylib
 
+# Windows resource object, generated from app.rc by windres (see README dev guide)
+*.syso
+
 # Test binary, built with `go test -c`
 *.test
 
