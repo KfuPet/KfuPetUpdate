@@ -11,6 +11,10 @@ import (
 // installRegistryPath 是安装记录的注册表位置（用户域，无需管理员权限）。
 const installRegistryPath = `Software\KfuPet`
 
+// uninstallEntryPath 是 Windows 标准卸载入口的位置，
+// 写在这里的程序会出现在「设置 → 应用和功能」列表中。
+const uninstallEntryPath = `Software\Microsoft\Windows\CurrentVersion\Uninstall\KfuPet`
+
 // 注册表内的值名。
 const (
 	valueInstallPath = "InstallPath"
@@ -54,6 +58,40 @@ func writeInstallRecord(rec installRecord) error {
 		return err
 	}
 	return k.SetStringValue(valueVersion, rec.DisplayVersion)
+}
+
+// writeUninstallEntry 写入标准卸载入口。
+func writeUninstallEntry(e uninstallEntry) error {
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, uninstallEntryPath, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+
+	values := map[string]string{
+		"DisplayName":     e.DisplayName,
+		"DisplayVersion":  e.DisplayVersion,
+		"UninstallString": e.UninstallString,
+		"DisplayIcon":     e.DisplayIcon,
+		"Publisher":       e.Publisher,
+	}
+	for name, value := range values {
+		if err := k.SetStringValue(name, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// clearUninstallEntry 删除标准卸载入口；项本就不存在时视为成功。
+func clearUninstallEntry() error {
+	if err := registry.DeleteKey(registry.CURRENT_USER, uninstallEntryPath); err != nil {
+		if errors.Is(err, registry.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // clearInstallRecord 删除整个安装记录项；项本就不存在时视为成功。

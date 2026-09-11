@@ -107,6 +107,15 @@ func smallText(s string) *canvas.Text {
 	return t
 }
 
+// actionButtonSize 是各页面操作按钮的统一尺寸。
+// 按钮宽度默认只由文字决定，单字按钮（如"是""否"）会窄得不好点，故统一给定尺寸。
+var actionButtonSize = fyne.NewSize(100, 40)
+
+// actionButton 生成统一尺寸的操作按钮。
+func actionButton(label string, tapped func()) fyne.CanvasObject {
+	return container.NewGridWrap(actionButtonSize, widget.NewButton(label, tapped))
+}
+
 func bottomBar() fyne.CanvasObject {
 	kfupetURL, _ := url.Parse("https://github.com/KfuPet")
 	copyrightText := canvas.NewText("Copyright © 2025 - 2026 ", color.Gray{Y: 0x99})
@@ -276,8 +285,8 @@ func buildChooseDirPage(s appState, h flowHandlers) fyne.CanvasObject {
 		container.NewCenter(title),
 		container.NewCenter(smallText("程序将安装到下面的目录：")),
 		pathLabel,
-		container.NewCenter(widget.NewButton("浏览…", h.browse)),
-		container.NewCenter(widget.NewButton("下一步", h.next)),
+		container.NewCenter(actionButton("浏览…", h.browse)),
+		container.NewCenter(actionButton("下一步", h.next)),
 		layout.NewSpacer(),
 	)
 }
@@ -304,8 +313,8 @@ func buildOptionsPage(s appState, h flowHandlers) fyne.CanvasObject {
 		container.NewCenter(startMenuCheck),
 		container.NewCenter(smallText("安装位置："+s.targetDir)),
 		container.NewCenter(container.NewHBox(
-			widget.NewButton("上一步", h.back),
-			widget.NewButton("安装", h.install),
+			actionButton("上一步", h.back),
+			actionButton("安装", h.install),
 		)),
 		layout.NewSpacer(),
 	)
@@ -385,17 +394,16 @@ func buildInstallDoneView(s appState, h flowHandlers) fyne.CanvasObject {
 	question := widget.NewLabel("是否立即启动 KfuPet？")
 	question.Alignment = fyne.TextAlignCenter
 
-	// 单字按钮按内容定宽会又窄又不好点，这里给定固定尺寸。
-	yesButton := container.NewGridWrap(fyne.NewSize(100, 40), widget.NewButton("是", h.launch))
-	noButton := container.NewGridWrap(fyne.NewSize(100, 40), widget.NewButton("否", h.quit))
-
 	return container.NewVBox(
 		layout.NewSpacer(),
 		container.NewCenter(title),
 		container.NewCenter(smallText(version)),
 		container.NewCenter(smallText("安装位置："+s.targetDir)),
 		container.NewCenter(question),
-		container.NewCenter(container.NewHBox(yesButton, noButton)),
+		container.NewCenter(container.NewHBox(
+			actionButton("是", h.launch),
+			actionButton("否", h.quit),
+		)),
 		layout.NewSpacer(),
 	)
 }
@@ -418,8 +426,8 @@ func buildInstallFailedView(s appState, h flowHandlers) fyne.CanvasObject {
 		detail,
 		container.NewCenter(smallText("安装位置："+s.targetDir)),
 		container.NewCenter(container.NewHBox(
-			widget.NewButton("重试", h.retry),
-			widget.NewButton("返回", h.backToMain),
+			actionButton("重试", h.retry),
+			actionButton("返回", h.backToMain),
 		)),
 		layout.NewSpacer(),
 	)
@@ -485,7 +493,7 @@ func buildFailedPanel(title string, failure error, retryLabel string, onRetry fu
 	detail.Alignment = fyne.TextAlignCenter
 	detail.Wrapping = fyne.TextWrapWord
 
-	retry := widget.NewButton(retryLabel, onRetry)
+	retry := actionButton(retryLabel, onRetry)
 
 	return container.NewVBox(
 		layout.NewSpacer(),
