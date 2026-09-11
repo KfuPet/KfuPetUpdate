@@ -14,6 +14,16 @@ type installRecord struct {
 	DisplayVersion string // 本地版本号，不带 v 前缀
 }
 
+// uninstallEntry 是写进 Windows 标准卸载入口的信息，
+// 用于让「设置 → 应用和功能」能列出并卸载本程序。
+type uninstallEntry struct {
+	DisplayName     string // 显示名称
+	DisplayVersion  string // 显示版本
+	UninstallString string // 点「卸载」时执行的命令
+	DisplayIcon     string // 图标来源
+	Publisher       string // 发布者
+}
+
 // installState 是本机 KfuPet 的安装状态，界面据此决定可用操作。
 type installState struct {
 	Installed bool   // 是否已安装
@@ -33,6 +43,7 @@ func detectInstallState() installState {
 	exePath := filepath.Join(rec.InstallPath, executableName)
 	if info, err := os.Stat(exePath); err != nil || info.IsDir() {
 		_ = clearInstallRecord()
+		_ = clearUninstallEntry() // 标准卸载入口是成对写入的，一并清掉
 		return installState{}
 	}
 

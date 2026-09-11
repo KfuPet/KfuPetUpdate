@@ -8,12 +8,13 @@ import "errors"
 
 func readInstallRecord() (*installRecord, error) { return nil, nil }
 
-// writeUninstallEntry 在非 Windows 平台无法持久化安装记录，直接报错，
+// writeInstallRecord 在非 Windows 平台无法持久化安装记录，直接报错，
 // 避免出现"文件已落盘但安装信息丢失"的静默不一致。
 func writeInstallRecord(installRecord) error {
 	return errors.New("当前平台不支持安装 KfuPet")
 }
 
+// 标准卸载入口同样依赖注册表，非 Windows 平台下为空实现。
 func writeUninstallEntry(uninstallEntry) error { return nil }
 
 func clearUninstallEntry() error { return nil }

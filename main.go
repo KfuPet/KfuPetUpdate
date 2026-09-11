@@ -452,6 +452,23 @@ func pickInstallDir(w fyne.Window, startDir string, onPicked func(string)) {
 	d.Show()
 }
 
+// confirmUninstall 弹出卸载确认框，并让用户选择是否保留个人数据。
+func confirmUninstall(w fyne.Window, onConfirmed func(keepUserData bool)) {
+	note := widget.NewLabel("将删除 KfuPet 的程序文件、快捷方式与安装信息。")
+	note.Wrapping = fyne.TextWrapWord
+
+	keepData := widget.NewCheck("保留个人数据（配置、角色等）", nil)
+	keepData.SetChecked(true) // 默认保留，避免误删
+
+	dialog.ShowCustomConfirm("卸载 KfuPet", "卸载", "取消",
+		container.NewVBox(note, keepData),
+		func(confirmed bool) {
+			if confirmed {
+				onConfirmed(keepData.Checked)
+			}
+		}, w)
+}
+
 // formatBytes 把字节数格式化为便于阅读的形式，如 "67.4 MB"。
 func formatBytes(n int64) string {
 	const unit = 1024
@@ -524,6 +541,7 @@ func main() {
 	var render func()
 	var startVersionCheck func()
 	var startInstall func()
+	var startUninstall func(keepUserData bool)
 
 	render = func() {
 		// 安装流程期间整屏切换到安装向导页，结束后再回到主界面。
@@ -580,9 +598,7 @@ func main() {
 			upgrade: func() {
 				// TODO: 升级逻辑（沿用注册表记录的安装目录，不再询问）
 			},
-			uninstall: func() {
-				// TODO: 卸载逻辑
-			},
+			uninstall: func() { confirmUninstall(w, startUninstall) },
 		}))
 	}
 
@@ -650,6 +666,40 @@ func main() {
 					state.st = st
 				}
 				render()
+			})
+		}()
+	}
+
+	// 卸载：确认之后删除程序文件、快捷方式与注册表记录。
+	startUninstall = func(keepUserData bool) {
+		installDir := state.st.Path
+		if installDir == "" {
+			return
+		}
+
+		// 卸载期间用模态框挡住主界面，避免重复触发。
+		activity := widget.NewActivity()
+		activity.Start()
+		modal := dialog.NewCustomWithoutButtons("正在卸载",
+			container.NewCenter(container.NewVBox(
+				container.NewCenter(container.NewGridWrap(fyne.NewSize(48, 48), activity)),
+				container.NewCenter(widget.NewLabel("正在卸载 KfuPet…")),
+			)), w)
+		modal.Show()
+
+		go func() {
+			err := uninstallKfuPet(installDir, uninstallOptions{KeepUserData: keepUserData})
+
+			fyne.Do(func() {
+				modal.Hide()
+				// 重新检测：成功则主界面回到"仅安装"，失败也如实反映磁盘现状。
+				state.st = detectInstallState()
+				render()
+				if err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				dialog.ShowInformation("卸载完成", "KfuPet 已卸载。", w)
 			})
 		}()
 	}
