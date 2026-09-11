@@ -11,6 +11,9 @@
 # Windows resource object, generated from app.rc by windres (see README dev guide)
 *.syso
 
+# Build output directory
+/dist/
+
 # Test binary, built with `go test -c`
 *.test
 

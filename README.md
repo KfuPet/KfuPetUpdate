@@ -24,9 +24,10 @@ go generate ./...
 # 运行（启动闪屏 → 从 GitHub 查询 KfuPet 最新版本 → 主界面）
 go run .
 
-# 打包带图标的 exe
+# 打包带图标的 exe（输出到 dist/）
 go generate ./...
-go build -o KfuPetUpdate.exe .
+New-Item -ItemType Directory -Force -Path dist | Out-Null
+go build -o dist/KfuPetUpdate.exe .
 ```
 
 ### 目录结构
@@ -34,3 +35,4 @@ go build -o KfuPetUpdate.exe .
 - `update.go`：版本查询逻辑（GitHub 源优先，自建服务器源为占位空壳，失败时回退）
 - `app.rc`：Windows 图标资源脚本
 - `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`appicon.png` 非 Windows 平台窗口图标、`app.ico` exe 多尺寸图标）
+- `dist/`：打包输出目录（`go build -o dist/`，已在 `.gitignore` 忽略）
