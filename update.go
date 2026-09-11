@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -12,11 +13,20 @@ import (
 // 查询整个流程允许的最长时间（覆盖所有更新源）。
 const checkTimeout = 30 * time.Second
 
+// artifact 是发布版中的一个可下载产物（安装包等）。
+type artifact struct {
+	Name        string // 附件名
+	DownloadURL string // 下载直链
+	Size        int64  // 字节数
+	Digest      string // GitHub 提供的摘要，形如 "sha256:..."，可能为空
+}
+
 type releaseInfo struct {
-	Version        string    // 远端版本号
-	ReleasePageURL string    // 发布页地址
-	ReleaseNotes   string    // 更新说明
-	PublishedAt    time.Time // 发布时间（UTC），未知时为零值
+	Version        string     // 远端版本号
+	ReleasePageURL string     // 发布页地址
+	ReleaseNotes   string     // 更新说明
+	PublishedAt    time.Time  // 发布时间（UTC），未知时为零值
+	Artifacts      []artifact // 发布版中的可下载产物
 }
 
 // updateSource 更新源接口：获取远端最新发布信息。
@@ -67,6 +77,12 @@ func (s *gitHubSource) fetchLatest(ctx context.Context) (*releaseInfo, error) {
 		HTMLURL     string `json:"html_url"`
 		Body        string `json:"body"`
 		PublishedAt string `json:"published_at"`
+		Assets      []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+			Size               int64  `json:"size"`
+			Digest             string `json:"digest"`
+		} `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
@@ -83,7 +99,42 @@ func (s *gitHubSource) fetchLatest(ctx context.Context) (*releaseInfo, error) {
 	if t, err := time.Parse(time.RFC3339, data.PublishedAt); err == nil {
 		rel.PublishedAt = t
 	}
+	for _, a := range data.Assets {
+		if a.Name == "" || a.BrowserDownloadURL == "" {
+			continue
+		}
+		rel.Artifacts = append(rel.Artifacts, artifact{
+			Name:        a.Name,
+			DownloadURL: a.BrowserDownloadURL,
+			Size:        a.Size,
+			Digest:      a.Digest,
+		})
+	}
 	return rel, nil
+}
+
+// assetSuffix 返回当前平台安装包应有的文件名后缀，如 "-windows-amd64.zip"。
+func assetSuffix() string {
+	return fmt.Sprintf("-%s-%s.zip", runtime.GOOS, runtime.GOARCH)
+}
+
+// artifactFor 挑出当前平台对应的安装包。
+// 必须按后缀匹配：GitHub 的 Release 除自上传附件外还会附带
+// "Source code (zip)" 等源码包，用"第一个 zip"之类的宽泛规则会挑错。
+func (r *releaseInfo) artifactFor() (*artifact, error) {
+	suffix := assetSuffix()
+	for i := range r.Artifacts {
+		if strings.HasSuffix(r.Artifacts[i].Name, suffix) {
+			return &r.Artifacts[i], nil
+		}
+	}
+	return nil, fmt.Errorf("发布版 %s 未提供当前平台（%s-%s）的安装包",
+		r.Version, runtime.GOOS, runtime.GOARCH)
+}
+
+// normalizeVersion 去掉版本号的 v 前缀，注册表中统一存不带前缀的形式。
+func normalizeVersion(version string) string {
+	return strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
 // serverSource 自建服务器更新源（空壳占位）。

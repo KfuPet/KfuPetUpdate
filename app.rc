@@ -8,6 +8,10 @@
 1         ICON "icon/app.ico"
 GLFW_ICON ICON "icon/app.ico"
 
+// 应用程序清单：声明 requireAdministrator，使 exe 启动即索取管理员权限。
+// 资源类型 24 即 RT_MANIFEST，名称必须为 1，Windows 才认。
+1 24 "app.manifest"
+
 // Windows 资源定义：为 KfuPetUpdate.exe 设置「属性 → 详细信息」页内容。
 1 VERSIONINFO
 FILEVERSION     0,0,1,0

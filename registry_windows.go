@@ -42,6 +42,20 @@ func readInstallRecord() (*installRecord, error) {
 	return &installRecord{InstallPath: installPath, DisplayVersion: version}, nil
 }
 
+// writeInstallRecord 写入（或覆盖）安装记录。
+func writeInstallRecord(rec installRecord) error {
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, installRegistryPath, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+
+	if err := k.SetStringValue(valueInstallPath, rec.InstallPath); err != nil {
+		return err
+	}
+	return k.SetStringValue(valueVersion, rec.DisplayVersion)
+}
+
 // clearInstallRecord 删除整个安装记录项；项本就不存在时视为成功。
 func clearInstallRecord() error {
 	if err := registry.DeleteKey(registry.CURRENT_USER, installRegistryPath); err != nil {

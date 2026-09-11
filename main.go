@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"image/color"
 	_ "image/png"
 	"net/url"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -13,7 +15,9 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -117,13 +121,8 @@ func bottomBar() fyne.CanvasObject {
 	)
 }
 
-// buildVersionPanel 组装右侧信息面板：
-// 查询成功时展示远端最新版本；查询失败时在同样的位置展示失败原因与重试入口。
-func buildVersionPanel(rel *releaseInfo, checkErr error, st installState, onRetry func()) fyne.CanvasObject {
-	if checkErr != nil {
-		return buildCheckFailedPanel(checkErr, onRetry)
-	}
-
+// buildVersionPanel 展示远端最新版本信息；已安装时补一行本地版本。
+func buildVersionPanel(rel *releaseInfo, st installState) fyne.CanvasObject {
 	caption := smallText("KfuPet 最新版本")
 	caption.TextStyle = fyne.TextStyle{}
 
@@ -156,24 +155,63 @@ func publishLine(rel *releaseInfo) string {
 	return "发布于 " + rel.PublishedAt.Local().Format("2006-01-02")
 }
 
+// installPhase 表示界面当前处于安装流程的哪个位置。
+type installPhase int
+
+const (
+	phaseIdle      installPhase = iota // 不在安装流程中，展示主界面
+	phaseChooseDir                     // 向导第一步：选择安装位置
+	phaseOptions                       // 向导第二步：安装选项
+	phaseRunning                       // 正在安装
+	phaseDone                          // 安装完成
+	phaseFailed                        // 安装失败
+)
+
+// appState 是界面的全部可变状态；每次变化后整体重建界面。
+type appState struct {
+	rel      *releaseInfo // 远端发布信息；查询失败时为 nil
+	checkErr error        // 版本查询失败原因
+	st       installState // 本机安装状态
+
+	phase      installPhase
+	targetDir  string          // 本次安装的目标目录
+	opts       installOptions  // 本次安装的选项
+	progress   installProgress // 最近一次进度汇报
+	installErr error           // 安装失败原因
+}
+
+// uiHandlers 是主界面各操作入口。
+type uiHandlers struct {
+	retryCheck func()
+	install    func()
+	upgrade    func()
+	uninstall  func()
+}
+
+// flowHandlers 是安装向导各页面的操作入口。
+type flowHandlers struct {
+	browse       func()     // 第一步：自定义安装位置
+	next         func()     // 第一步 → 第二步
+	back         func()     // 第二步 → 第一步
+	install      func()     // 第二步 → 开始安装
+	retry        func()     // 安装失败后按当前选项重试
+	finish       func()     // 结束安装流程，返回主界面
+	setDesktop   func(bool) // 勾选/取消桌面快捷方式
+	setStartMenu func(bool) // 勾选/取消开始菜单快捷方式
+}
+
 // buildMainUI 组装主界面。
 // 可用操作由注册表安装状态决定：未安装只提供「安装」，
 // 已安装提供「升级」「卸载」，「安装」不再出现。
-func buildMainUI(rel *releaseInfo, checkErr error, st installState, onRetry func()) fyne.CanvasObject {
+func buildMainUI(s appState, h uiHandlers) fyne.CanvasObject {
 	var actions []fyne.CanvasObject
-	if st.Installed {
+	if s.st.Installed {
 		actions = append(actions,
-			widget.NewButton("升级", func() {
-				// TODO: 升级逻辑
-			}),
-			widget.NewButton("卸载", func() {
-				// TODO: 卸载逻辑
-			}),
+			widget.NewButton("升级", h.upgrade),
+			widget.NewButton("卸载", h.uninstall),
 		)
 	} else {
-		actions = append(actions, widget.NewButton("安装", func() {
-			// TODO: 安装逻辑
-		}))
+		actions = append(actions, widget.NewButton("安装", h.install))
 	}
 
 	// 上方图标：从资源嵌入的 KfuPet Logo
@@ -189,10 +227,224 @@ func buildMainUI(rel *releaseInfo, checkErr error, st installState, onRetry func
 	}, actions...)
 	left := container.NewBorder(logoArea, nil, nil, nil, buttons)
 
-	// 右侧：展示从远端查询到的最新版本信息（查询失败时为失败原因）
-	right := buildVersionPanel(rel, checkErr, st, onRetry)
+	return container.NewBorder(nil, bottomBar(), left, nil, buildRightPanel(s, h))
+}
 
-	return container.NewBorder(nil, bottomBar(), left, nil, right)
+// buildRightPanel 组装主界面右侧信息面板。
+func buildRightPanel(s appState, h uiHandlers) fyne.CanvasObject {
+	if s.checkErr != nil {
+		return buildFailedPanel("无法获取线上版本", s.checkErr, "重试", h.retryCheck)
+	}
+	return buildVersionPanel(s.rel, s.st)
+}
+
+// buildInstallView 组装安装向导的全屏页面。
+// 安装不再是主界面的一部分，而是独立成页；结束后由用户返回主界面。
+func buildInstallView(s appState, h flowHandlers) fyne.CanvasObject {
+	switch s.phase {
+	case phaseChooseDir:
+		return buildChooseDirPage(s, h)
+	case phaseOptions:
+		return buildOptionsPage(s, h)
+	case phaseDone:
+		return buildInstallDoneView(s, h)
+	case phaseFailed:
+		return buildInstallFailedView(s, h)
+	default:
+		return buildInstallingView(s)
+	}
+}
+
+// buildChooseDirPage 向导第一步：确认或自定义安装位置。
+func buildChooseDirPage(s appState, h flowHandlers) fyne.CanvasObject {
+	caption := smallText("KfuPet 安装向导")
+	caption.TextStyle = fyne.TextStyle{}
+
+	title := canvas.NewText("选择安装位置", theme.Color(theme.ColorNameForeground))
+	title.TextSize = 20
+	title.TextStyle = fyne.TextStyle{Bold: true}
+
+	pathLabel := widget.NewLabel(s.targetDir)
+	pathLabel.Alignment = fyne.TextAlignCenter
+	pathLabel.Wrapping = fyne.TextWrapWord
+
+	return container.NewVBox(
+		layout.NewSpacer(),
+		container.NewCenter(caption),
+		container.NewCenter(title),
+		container.NewCenter(smallText("程序将安装到下面的目录：")),
+		pathLabel,
+		container.NewCenter(widget.NewButton("浏览…", h.browse)),
+		container.NewCenter(widget.NewButton("下一步", h.next)),
+		layout.NewSpacer(),
+	)
+}
+
+// buildOptionsPage 向导第二步：选择是否创建快捷方式。
+func buildOptionsPage(s appState, h flowHandlers) fyne.CanvasObject {
+	caption := smallText("KfuPet 安装向导")
+	caption.TextStyle = fyne.TextStyle{}
+
+	title := canvas.NewText("安装选项", theme.Color(theme.ColorNameForeground))
+	title.TextSize = 20
+	title.TextStyle = fyne.TextStyle{Bold: true}
+
+	desktopCheck := widget.NewCheck("创建桌面快捷方式", h.setDesktop)
+	desktopCheck.SetChecked(s.opts.Desktop)
+	startMenuCheck := widget.NewCheck("创建开始菜单快捷方式", h.setStartMenu)
+	startMenuCheck.SetChecked(s.opts.StartMenu)
+
+	return container.NewVBox(
+		layout.NewSpacer(),
+		container.NewCenter(caption),
+		container.NewCenter(title),
+		container.NewCenter(desktopCheck),
+		container.NewCenter(startMenuCheck),
+		container.NewCenter(smallText("安装位置："+s.targetDir)),
+		container.NewCenter(container.NewHBox(
+			widget.NewButton("上一步", h.back),
+			widget.NewButton("安装", h.install),
+		)),
+		layout.NewSpacer(),
+	)
+}
+
+// buildInstallingView 展示安装进行中的步骤清单与下载进度。
+func buildInstallingView(s appState) fyne.CanvasObject {
+	caption := smallText("KfuPet 安装中")
+	caption.TextStyle = fyne.TextStyle{}
+
+	stageText := canvas.NewText(string(s.progress.Stage), theme.Color(theme.ColorNameForeground))
+	stageText.TextSize = 20
+	stageText.TextStyle = fyne.TextStyle{Bold: true}
+
+	// 下载阶段总量已知：用确定进度条并展示速度与字节数；
+	// 其余阶段无法量化，用不确定进度条表示"正在进行"。
+	// 进度条自身会渲染百分比文案，宽度需由外部约束。
+	var bar fyne.CanvasObject
+	detail := " "
+	if s.progress.Stage == stageDownloading && s.progress.Total > 0 {
+		progressBar := widget.NewProgressBar()
+		progressBar.Max = float64(s.progress.Total)
+		progressBar.SetValue(float64(s.progress.Done))
+		bar = progressBar
+		detail = fmt.Sprintf("%s / %s　%s/s",
+			formatBytes(s.progress.Done),
+			formatBytes(s.progress.Total),
+			formatBytes(int64(s.progress.Speed)))
+	} else {
+		progressBar := widget.NewProgressBarInfinite()
+		progressBar.Start()
+		bar = progressBar
+	}
+
+	return container.NewCenter(container.NewVBox(
+		container.NewCenter(caption),
+		container.NewCenter(stageText),
+		container.NewGridWrap(fyne.NewSize(360, 26), bar),
+		container.NewCenter(smallText(detail)),
+		buildStepList(stagesFor(s.opts), s.progress.Stage),
+		container.NewCenter(smallText("安装位置："+s.targetDir)),
+	))
+}
+
+// buildStepList 组装安装步骤清单：已完成用常规色、当前步骤高亮、未开始弱化。
+func buildStepList(stages []installStage, current installStage) fyne.CanvasObject {
+	idx := stageIndex(stages, current)
+	rows := make([]fyne.CanvasObject, 0, len(stages))
+	for i, stage := range stages {
+		label := widget.NewLabel(fmt.Sprintf("%d. %s", i+1, stage))
+		switch {
+		case i < idx:
+			label.Importance = widget.MediumImportance
+		case i == idx:
+			label.Importance = widget.HighImportance
+			label.TextStyle = fyne.TextStyle{Bold: true}
+		default:
+			label.Importance = widget.LowImportance
+		}
+		rows = append(rows, container.NewCenter(label))
+	}
+	return container.NewVBox(rows...)
+}
+
+// buildInstallDoneView 展示安装结果与返回主界面的入口。
+func buildInstallDoneView(s appState, h flowHandlers) fyne.CanvasObject {
+	title := canvas.NewText("安装完成", theme.Color(theme.ColorNameForeground))
+	title.TextSize = 24
+	title.TextStyle = fyne.TextStyle{Bold: true}
+
+	version := " "
+	if s.st.Version != "" {
+		version = "KfuPet " + s.st.Version
+	}
+
+	return container.NewVBox(
+		layout.NewSpacer(),
+		container.NewCenter(title),
+		container.NewCenter(smallText(version)),
+		container.NewCenter(smallText("安装位置："+s.targetDir)),
+		container.NewCenter(widget.NewButton("完成", h.finish)),
+		layout.NewSpacer(),
+	)
+}
+
+// buildInstallFailedView 展示安装失败原因与重试、返回入口。
+func buildInstallFailedView(s appState, h flowHandlers) fyne.CanvasObject {
+	title := widget.NewLabelWithStyle("安装失败", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+
+	reason := "未知错误"
+	if s.installErr != nil {
+		reason = s.installErr.Error()
+	}
+	detail := widget.NewLabel("原因：" + reason)
+	detail.Alignment = fyne.TextAlignCenter
+	detail.Wrapping = fyne.TextWrapWord
+
+	return container.NewVBox(
+		layout.NewSpacer(),
+		title,
+		detail,
+		container.NewCenter(smallText("安装位置："+s.targetDir)),
+		container.NewCenter(container.NewHBox(
+			widget.NewButton("重试", h.retry),
+			widget.NewButton("返回", h.finish),
+		)),
+		layout.NewSpacer(),
+	)
+}
+
+// pickInstallDir 让用户选择安装目录；取消或选择失败时不回调。
+// startDir 用于定位对话框的初始位置。
+func pickInstallDir(w fyne.Window, startDir string, onPicked func(string)) {
+	d := dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
+		if err != nil || uri == nil {
+			return // 用户取消，或选择过程中出错：保持当前页面不变
+		}
+		// Fyne 返回的路径在 Windows 上是正斜杠形式，需转回本地分隔符。
+		onPicked(filepath.Clean(filepath.FromSlash(uri.Path())))
+	}, w)
+
+	if start := pickerStartDir(startDir); start != "" {
+		if loc, err := storage.ListerForURI(storage.NewFileURI(start)); err == nil {
+			d.SetLocation(loc)
+		}
+	}
+	d.Show()
+}
+
+// formatBytes 把字节数格式化为便于阅读的形式，如 "67.4 MB"。
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	value, exp := float64(n), 0
+	for value >= unit && exp < 4 {
+		value /= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", value, "KMGT"[exp-1])
 }
 
 const minSplashDuration = 2 * time.Second
@@ -212,27 +464,21 @@ func checkingView() fyne.CanvasObject {
 	))
 }
 
-// buildCheckFailedPanel 组装右侧信息面板的查询失败形态。
-// 不整屏报错，只在原本展示版本信息的位置给出失败原因与重试入口，
-// 使已安装用户在网络异常时依然可以使用「卸载」。
-func buildCheckFailedPanel(checkErr error, onRetry func()) fyne.CanvasObject {
-	title := widget.NewLabelWithStyle("无法获取线上版本", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-
-	hint := widget.NewLabel("请检查网络连接后重试")
-	hint.Alignment = fyne.TextAlignCenter
-	hint.Wrapping = fyne.TextWrapWord
+// buildFailedPanel 组装右侧的失败面板，用于查询失败与安装失败两种情形。
+// 不整屏报错，使左键的可用操作不受影响。
+func buildFailedPanel(title string, failure error, retryLabel string, onRetry func()) fyne.CanvasObject {
+	titleLabel := widget.NewLabelWithStyle(title, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
 	// 透出真实失败原因
-	detail := widget.NewLabel("原因：" + checkErr.Error())
+	detail := widget.NewLabel("原因：" + failure.Error())
 	detail.Alignment = fyne.TextAlignCenter
 	detail.Wrapping = fyne.TextWrapWord
 
-	retry := widget.NewButton("重试", onRetry)
+	retry := widget.NewButton(retryLabel, onRetry)
 
 	return container.NewVBox(
 		layout.NewSpacer(),
-		title,
-		hint,
+		titleLabel,
 		detail,
 		container.NewCenter(retry),
 		layout.NewSpacer(),
@@ -255,17 +501,71 @@ func main() {
 
 	checker := newUpdateChecker()
 
+	var state appState
+	var render func()
 	var startVersionCheck func()
+	var startInstall func()
 
-	showMain := func(rel *releaseInfo, checkErr error, st installState) {
-		w.SetContent(buildMainUI(rel, checkErr, st, func() { startVersionCheck() }))
+	render = func() {
+		// 安装流程期间整屏切换到安装向导页，结束后再回到主界面。
+		if state.phase != phaseIdle {
+			w.SetContent(buildInstallView(state, flowHandlers{
+				browse: func() {
+					pickInstallDir(w, state.targetDir, func(dir string) {
+						state.targetDir = dir
+						render()
+					})
+				},
+				next: func() {
+					if err := validateInstallDir(state.targetDir); err != nil {
+						dialog.ShowError(err, w)
+						return
+					}
+					state.phase = phaseOptions
+					render()
+				},
+				back: func() {
+					state.phase = phaseChooseDir
+					render()
+				},
+				install: func() { startInstall() },
+				retry:   func() { startInstall() },
+				finish: func() {
+					state.phase = phaseIdle
+					render()
+				},
+				setDesktop:   func(checked bool) { state.opts.Desktop = checked },
+				setStartMenu: func(checked bool) { state.opts.StartMenu = checked },
+			}))
+			return
+		}
+
+		w.SetContent(buildMainUI(state, uiHandlers{
+			retryCheck: func() { startVersionCheck() },
+			install: func() {
+				// 进向导第一步：预填默认目录，快捷方式默认都勾选。
+				state.targetDir = defaultInstallDir()
+				state.opts = installOptions{Desktop: true, StartMenu: true}
+				state.phase = phaseChooseDir
+				render()
+			},
+			upgrade: func() {
+				// TODO: 升级逻辑（沿用注册表记录的安装目录，不再询问）
+			},
+			uninstall: func() {
+				// TODO: 卸载逻辑
+			},
+		}))
 	}
 
 	// 打开后：先显示转圈圈闪屏查询当前版本信息，
 	// 完成后切到主界面展示最新版本；查询失败时同样进主界面，
 	// 只在右侧面板展示失败原因与重试，不整屏报错。
 	startVersionCheck = func() {
+		state.phase = phaseIdle
+		state.checkErr = nil
 		w.SetContent(checkingView())
+
 		shownAt := time.Now() // 记录闪屏开始时刻，用于保证最短展示时长
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
@@ -281,7 +581,47 @@ func main() {
 			}
 
 			fyne.Do(func() {
-				showMain(rel, err, st)
+				state.st = st
+				state.rel = rel
+				state.checkErr = err
+				render()
+			})
+		}()
+	}
+
+	// 安装：把当前发布版按向导选定的目录与选项安装。
+	startInstall = func() {
+		rel := state.rel
+		if rel == nil || state.phase == phaseRunning {
+			return
+		}
+		installDir, opts := state.targetDir, state.opts
+
+		state.phase = phaseRunning
+		state.installErr = nil
+		state.progress = installProgress{Stage: stageDownloading}
+		render()
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+			defer cancel()
+
+			st, err := installKfuPet(ctx, rel, installDir, opts, func(p installProgress) {
+				fyne.Do(func() {
+					state.progress = p
+					render()
+				})
+			})
+
+			fyne.Do(func() {
+				if err != nil {
+					state.phase = phaseFailed
+					state.installErr = err
+				} else {
+					state.phase = phaseDone
+					state.st = st
+				}
+				render()
 			})
 		}()
 	}
