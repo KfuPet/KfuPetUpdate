@@ -6,12 +6,18 @@ name: Go
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
+
+permissions:
+  contents: read
 
 jobs:
 
   build:
+    # 日常校验：非 tag 的 push / PR 时在 Linux 上编译与测试
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -37,3 +43,39 @@ jobs:
 
     - name: Test
       run: go test -v ./...
+
+  release:
+    # 推送 v* 标签时：Windows 打包带图标的 exe 并自动创建 Release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: true
+
+    # 提供 windres（生成 exe 图标资源）与 gcc（Fyne 的 CGO 编译依赖）
+    - name: Set up MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        install: mingw-w64-ucrt-x86_64-gcc
+        path-type: inherit
+
+    - name: Generate icon resource and build exe
+      shell: msys2 {0}
+      run: |
+        go generate ./...
+        go build -trimpath -ldflags "-s -w -H=windowsgui" -o KfuPetUpdate.exe .
+
+    - name: Create Release
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh release create "${{ github.ref_name }}" "KfuPetUpdate.exe" --title "${{ github.ref_name }}" --generate-notes
