@@ -1,3 +1,9 @@
 // Windows 资源定义：为 KfuPetUpdate.exe 设置图标。
 // 通过 windres 编译为 *.syso，go build 会自动链入可执行文件。
-1 ICON "icon/logo_256x256.ico"
+//
+// 1         —— 数字 ID 最小，作为 exe 文件图标（资源管理器/任务栏固定时显示）
+// GLFW_ICON —— Fyne 底层的 GLFW 按这个名字查找窗口图标（win32_window.c 中
+//              LoadImageW(..., L"GLFW_ICON", ...)），找不到会退回系统通用图标。
+//              两处指向同一个多尺寸 ICO，系统按需取 16/32 等原生尺寸。
+1         ICON "icon/app.ico"
+GLFW_ICON ICON "icon/app.ico"

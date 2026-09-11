@@ -12,7 +12,7 @@
   - exe 文件图标由 `windres` 从资源脚本生成，也需要它
 
 ### 生成 Windows 资源对象
-`app_windows_amd64.syso`（由 `app.rc` + `icon/logo_256x256.ico` 编译得到）是生成物，已在 `.gitignore` 中忽略。**clone 仓库后编译前需先生成一次**，否则编译出的 exe 不带图标：
+`app_windows_amd64.syso`（由 `app.rc` + `icon/app.ico` 编译得到）是生成物，已在 `.gitignore` 中忽略。**clone 仓库后编译前需先生成一次**，否则编译出的 exe 不带图标：
 
 ```powershell
 go generate ./...
@@ -33,4 +33,4 @@ go build -o KfuPetUpdate.exe .
 - `main.go`：界面层（启动闪屏/版本查询展示、主界面布局）
 - `update.go`：版本查询逻辑（GitHub 源优先，自建服务器源为占位空壳，失败时回退）
 - `app.rc`：Windows 图标资源脚本
-- `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`appicon.png` 窗口图标、`logo_*.ico` exe 图标套件）
+- `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`appicon.png` 非 Windows 平台窗口图标、`app.ico` exe 多尺寸图标）
