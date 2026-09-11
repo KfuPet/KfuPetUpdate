@@ -385,16 +385,17 @@ func buildInstallDoneView(s appState, h flowHandlers) fyne.CanvasObject {
 	question := widget.NewLabel("是否立即启动 KfuPet？")
 	question.Alignment = fyne.TextAlignCenter
 
+	// 单字按钮按内容定宽会又窄又不好点，这里给定固定尺寸。
+	yesButton := container.NewGridWrap(fyne.NewSize(100, 40), widget.NewButton("是", h.launch))
+	noButton := container.NewGridWrap(fyne.NewSize(100, 40), widget.NewButton("否", h.quit))
+
 	return container.NewVBox(
 		layout.NewSpacer(),
 		container.NewCenter(title),
 		container.NewCenter(smallText(version)),
 		container.NewCenter(smallText("安装位置："+s.targetDir)),
 		container.NewCenter(question),
-		container.NewCenter(container.NewHBox(
-			widget.NewButton("是", h.launch),
-			widget.NewButton("否", h.quit),
-		)),
+		container.NewCenter(container.NewHBox(yesButton, noButton)),
 		layout.NewSpacer(),
 	)
 }

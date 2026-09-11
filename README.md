@@ -28,6 +28,16 @@ go generate ./...
 
 ### 运行与打包
 ```powershell
+# 一键构建（推荐）：资源有更新才重新生成 syso → 打包到 dist/KfuPetUpdate.exe
+.\build.ps1
+
+# 打包后立即启动（会弹 UAC）
+.\build.ps1 -Run
+```
+
+手动执行等价命令：
+
+```powershell
 # 运行（启动即请求管理员权限 → 闪屏 → 从 GitHub 查询 KfuPet 最新版本 → 主界面）
 # 开发时 go run 的控制台附在当前终端上，属正常现象
 go run .
@@ -44,6 +54,7 @@ go build -ldflags -H=windowsgui -o dist/KfuPetUpdate.exe .
 安装完成后询问是否立即启动 KfuPet：选「是」会拉起刚装好的程序（继承 updater 的管理员权限），选「否」则不启动；两者都会退出 updater。
 
 ### 目录结构
+- `build.ps1`：一键构建脚本（按需重新生成 syso → 打包 exe，`-Run` 可打包后立即启动）；**须保持 UTF-8 with BOM 编码**，否则 PowerShell 5.1 按 GBK 解析会导致中文报错
 - `main.go`：界面层（启动闪屏、主界面、安装向导各页面）
 - `update.go`：版本查询逻辑（GitHub 源优先，自建服务器源为占位空壳，失败时回退），以及发布版产物（安装包）的解析与挑选
 - `install.go`：安装状态检测（读取注册表安装记录并校验安装目录内程序是否仍存在）
