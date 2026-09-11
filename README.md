@@ -37,6 +37,8 @@ go build -o dist/KfuPetUpdate.exe .
 ### 目录结构
 - `main.go`：界面层（启动闪屏/版本查询展示、主界面布局）
 - `update.go`：版本查询逻辑（GitHub 源优先，自建服务器源为占位空壳，失败时回退）
+- `install.go`：安装状态检测（读取注册表安装记录并校验安装目录内程序是否仍存在）
+- `registry_windows.go` / `registry_other.go`：安装记录的注册表读写（Windows 实现与非 Windows 空实现）
 - `app.rc`：Windows 资源脚本（exe 图标 + 属性「详细信息」版本信息）
 - `app_windows_amd64.syso`：由 `app.rc` 编译出的 Windows 资源对象（已提交）
 - `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`appicon.png` 非 Windows 平台窗口图标、`app.ico` exe 多尺寸图标）

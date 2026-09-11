@@ -117,7 +117,7 @@ func bottomBar() fyne.CanvasObject {
 	)
 }
 
-func buildVersionPanel(rel *releaseInfo) fyne.CanvasObject {
+func buildVersionPanel(rel *releaseInfo, st installState) fyne.CanvasObject {
 	caption := smallText("KfuPet 最新版本")
 	caption.TextStyle = fyne.TextStyle{}
 
@@ -135,6 +135,10 @@ func buildVersionPanel(rel *releaseInfo) fyne.CanvasObject {
 			rows = append(rows, container.NewCenter(newLinkText("前往 GitHub 查看发布说明", u)))
 		}
 	}
+	// 已安装时补一行本地版本（取自注册表），便于确认升级方向。
+	if st.Installed && st.Version != "" {
+		rows = append(rows, container.NewCenter(smallText("当前已安装 "+st.Version)))
+	}
 	return container.NewCenter(container.NewVBox(rows...))
 }
 
@@ -146,33 +150,41 @@ func publishLine(rel *releaseInfo) string {
 	return "发布于 " + rel.PublishedAt.Local().Format("2006-01-02")
 }
 
-// buildMainUI 组装主界面
-func buildMainUI(rel *releaseInfo) fyne.CanvasObject {
-	installBtn := widget.NewButton("安装", func() {
-		// TODO: 安装逻辑
-	})
-	upgradeBtn := widget.NewButton("升级", func() {
-		// TODO: 升级逻辑
-	})
-	uninstallBtn := widget.NewButton("卸载", func() {
-		// TODO: 卸载逻辑
-	})
+// buildMainUI 组装主界面。
+// 可用操作由注册表安装状态决定：未安装只提供「安装」，
+// 已安装提供「升级」「卸载」，「安装」不再出现。
+func buildMainUI(rel *releaseInfo, st installState) fyne.CanvasObject {
+	var actions []fyne.CanvasObject
+	if st.Installed {
+		actions = append(actions,
+			widget.NewButton("升级", func() {
+				// TODO: 升级逻辑
+			}),
+			widget.NewButton("卸载", func() {
+				// TODO: 卸载逻辑
+			}),
+		)
+	} else {
+		actions = append(actions, widget.NewButton("安装", func() {
+			// TODO: 安装逻辑
+		}))
+	}
 
 	// 上方图标：从资源嵌入的 KfuPet Logo
 	logoImage := canvas.NewImageFromResource(fyne.NewStaticResource("Startlogo.png", startLogoPNG))
 	logoImage.FillMode = canvas.ImageFillContain
 	logoArea := container.NewCenter(container.NewGridWrap(fyne.NewSize(120, 120), logoImage))
 
-	// 左侧：上方图标 + 下方三个长条形按钮
+	// 左侧：上方图标 + 下方按钮（数量随安装状态变化）
 	buttons := container.New(&vfillLayout{
 		width:      180,
 		itemHeight: 48,
 		spacing:    20,
-	}, installBtn, upgradeBtn, uninstallBtn)
+	}, actions...)
 	left := container.NewBorder(logoArea, nil, nil, nil, buttons)
 
 	// 右侧：展示从远端查询到的最新版本信息
-	right := buildVersionPanel(rel)
+	right := buildVersionPanel(rel, st)
 
 	return container.NewBorder(nil, bottomBar(), left, nil, right)
 }
@@ -235,8 +247,8 @@ func main() {
 
 	checker := newUpdateChecker()
 
-	showMain := func(rel *releaseInfo) {
-		w.SetContent(buildMainUI(rel))
+	showMain := func(rel *releaseInfo, st installState) {
+		w.SetContent(buildMainUI(rel, st))
 	}
 
 	var startVersionCheck func()
@@ -253,6 +265,8 @@ func main() {
 			ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 			defer cancel()
 
+			// 本地注册表检查很快，与远端查询一并在后台完成，避免阻塞界面。
+			st := detectInstallState()
 			rel, err := checker.check(ctx)
 
 			// 查询提前完成时，补足剩余时长再切换，避免闪屏一闪而过
@@ -265,7 +279,7 @@ func main() {
 					showFailed(err)
 					return
 				}
-				showMain(rel)
+				showMain(rel, st)
 			})
 		}()
 	}
