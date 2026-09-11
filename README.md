@@ -41,6 +41,8 @@ go build -ldflags -H=windowsgui -o dist/KfuPetUpdate.exe .
 ### 安装流程
 主界面点「安装」进入向导：**选择安装位置**（默认 `%ProgramFiles%\KfuPet`，可浏览自定义）→ **安装选项**（桌面/开始菜单快捷方式）→ 安装。安装目录整体替换（先落暂存目录再改名），下载带 sha256 校验，快捷方式经 PowerShell 调 `WScript.Shell` 创建。
 
+安装完成后询问是否立即启动 KfuPet：选「是」会拉起刚装好的程序（继承 updater 的管理员权限），选「否」则不启动；两者都会退出 updater。
+
 ### 目录结构
 - `main.go`：界面层（启动闪屏、主界面、安装向导各页面）
 - `update.go`：版本查询逻辑（GitHub 源优先，自建服务器源为占位空壳，失败时回退），以及发布版产物（安装包）的解析与挑选

@@ -195,7 +195,9 @@ type flowHandlers struct {
 	back         func()     // 第二步 → 第一步
 	install      func()     // 第二步 → 开始安装
 	retry        func()     // 安装失败后按当前选项重试
-	finish       func()     // 结束安装流程，返回主界面
+	backToMain   func()     // 安装失败后返回主界面
+	launch       func()     // 安装完成后启动 KfuPet 并退出 updater
+	quit         func()     // 安装完成后不启动，直接退出 updater
 	setDesktop   func(bool) // 勾选/取消桌面快捷方式
 	setStartMenu func(bool) // 勾选/取消开始菜单快捷方式
 }
@@ -368,7 +370,8 @@ func buildStepList(stages []installStage, current installStage) fyne.CanvasObjec
 	return container.NewVBox(rows...)
 }
 
-// buildInstallDoneView 展示安装结果与返回主界面的入口。
+// buildInstallDoneView 展示安装结果，并询问是否立即启动。
+// 两个选项都会退出 updater：安装这一步已经完成，没有留在界面上的必要。
 func buildInstallDoneView(s appState, h flowHandlers) fyne.CanvasObject {
 	title := canvas.NewText("安装完成", theme.Color(theme.ColorNameForeground))
 	title.TextSize = 24
@@ -379,12 +382,19 @@ func buildInstallDoneView(s appState, h flowHandlers) fyne.CanvasObject {
 		version = "KfuPet " + s.st.Version
 	}
 
+	question := widget.NewLabel("是否立即启动 KfuPet？")
+	question.Alignment = fyne.TextAlignCenter
+
 	return container.NewVBox(
 		layout.NewSpacer(),
 		container.NewCenter(title),
 		container.NewCenter(smallText(version)),
 		container.NewCenter(smallText("安装位置："+s.targetDir)),
-		container.NewCenter(widget.NewButton("完成", h.finish)),
+		container.NewCenter(question),
+		container.NewCenter(container.NewHBox(
+			widget.NewButton("是", h.launch),
+			widget.NewButton("否", h.quit),
+		)),
 		layout.NewSpacer(),
 	)
 }
@@ -408,7 +418,7 @@ func buildInstallFailedView(s appState, h flowHandlers) fyne.CanvasObject {
 		container.NewCenter(smallText("安装位置："+s.targetDir)),
 		container.NewCenter(container.NewHBox(
 			widget.NewButton("重试", h.retry),
-			widget.NewButton("返回", h.finish),
+			widget.NewButton("返回", h.backToMain),
 		)),
 		layout.NewSpacer(),
 	)
@@ -530,10 +540,19 @@ func main() {
 				},
 				install: func() { startInstall() },
 				retry:   func() { startInstall() },
-				finish: func() {
+				backToMain: func() {
 					state.phase = phaseIdle
 					render()
 				},
+				launch: func() {
+					if err := launchKfuPet(state.targetDir); err != nil {
+						// 启动失败就留在完成页，用户可以再点一次或直接选「否」
+						dialog.ShowError(err, w)
+						return
+					}
+					a.Quit()
+				},
+				quit:         func() { a.Quit() },
 				setDesktop:   func(checked bool) { state.opts.Desktop = checked },
 				setStartMenu: func(checked bool) { state.opts.StartMenu = checked },
 			}))

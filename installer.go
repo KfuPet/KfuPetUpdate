@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -189,6 +190,18 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	}
 
 	return installState{Installed: true, Path: rec.InstallPath, Version: rec.DisplayVersion}, nil
+}
+
+// launchKfuPet 启动安装目录内的 KfuPet。
+// 本进程以管理员身份运行，子进程会继承同样的权限（不会再弹 UAC）。
+// 只负责拉起，不等它退出。
+func launchKfuPet(installDir string) error {
+	cmd := exec.Command(filepath.Join(installDir, executableName))
+	cmd.Dir = installDir
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("启动 KfuPet 失败：%w", err)
+	}
+	return nil
 }
 
 // reportStage 汇报一个不带字节进度的阶段。
