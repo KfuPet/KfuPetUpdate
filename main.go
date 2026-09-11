@@ -24,7 +24,7 @@ var startLogoPNG []byte
 //go:embed icon/appicon.png
 var appIconPNG []byte
 
-//go:generate windres app.rc -O coff -o app_windows_amd64.syso
+//go:generate windres -c 65001 app.rc -O coff -o app_windows_amd64.syso
 
 type vfillLayout struct {
 	width      float32 // 左侧栏整体宽度
