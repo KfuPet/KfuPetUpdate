@@ -117,7 +117,13 @@ func bottomBar() fyne.CanvasObject {
 	)
 }
 
-func buildVersionPanel(rel *releaseInfo, st installState) fyne.CanvasObject {
+// buildVersionPanel 组装右侧信息面板：
+// 查询成功时展示远端最新版本；查询失败时在同样的位置展示失败原因与重试入口。
+func buildVersionPanel(rel *releaseInfo, checkErr error, st installState, onRetry func()) fyne.CanvasObject {
+	if checkErr != nil {
+		return buildCheckFailedPanel(checkErr, onRetry)
+	}
+
 	caption := smallText("KfuPet 最新版本")
 	caption.TextStyle = fyne.TextStyle{}
 
@@ -153,7 +159,7 @@ func publishLine(rel *releaseInfo) string {
 // buildMainUI 组装主界面。
 // 可用操作由注册表安装状态决定：未安装只提供「安装」，
 // 已安装提供「升级」「卸载」，「安装」不再出现。
-func buildMainUI(rel *releaseInfo, st installState) fyne.CanvasObject {
+func buildMainUI(rel *releaseInfo, checkErr error, st installState, onRetry func()) fyne.CanvasObject {
 	var actions []fyne.CanvasObject
 	if st.Installed {
 		actions = append(actions,
@@ -183,8 +189,8 @@ func buildMainUI(rel *releaseInfo, st installState) fyne.CanvasObject {
 	}, actions...)
 	left := container.NewBorder(logoArea, nil, nil, nil, buttons)
 
-	// 右侧：展示从远端查询到的最新版本信息
-	right := buildVersionPanel(rel, st)
+	// 右侧：展示从远端查询到的最新版本信息（查询失败时为失败原因）
+	right := buildVersionPanel(rel, checkErr, st, onRetry)
 
 	return container.NewBorder(nil, bottomBar(), left, nil, right)
 }
@@ -206,16 +212,18 @@ func checkingView() fyne.CanvasObject {
 	))
 }
 
-// failedView 组装查询失败的闪屏
-func failedView(err error, onRetry func()) fyne.CanvasObject {
-	title := widget.NewLabelWithStyle("无法获取当前版本信息", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+// buildCheckFailedPanel 组装右侧信息面板的查询失败形态。
+// 不整屏报错，只在原本展示版本信息的位置给出失败原因与重试入口，
+// 使已安装用户在网络异常时依然可以使用「卸载」。
+func buildCheckFailedPanel(checkErr error, onRetry func()) fyne.CanvasObject {
+	title := widget.NewLabelWithStyle("无法获取线上版本", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
 	hint := widget.NewLabel("请检查网络连接后重试")
 	hint.Alignment = fyne.TextAlignCenter
 	hint.Wrapping = fyne.TextWrapWord
 
 	// 透出真实失败原因
-	detail := widget.NewLabel("原因：" + err.Error())
+	detail := widget.NewLabel("原因：" + checkErr.Error())
 	detail.Alignment = fyne.TextAlignCenter
 	detail.Wrapping = fyne.TextWrapWord
 
@@ -247,17 +255,15 @@ func main() {
 
 	checker := newUpdateChecker()
 
-	showMain := func(rel *releaseInfo, st installState) {
-		w.SetContent(buildMainUI(rel, st))
-	}
-
 	var startVersionCheck func()
-	showFailed := func(err error) {
-		w.SetContent(failedView(err, func() { startVersionCheck() }))
+
+	showMain := func(rel *releaseInfo, checkErr error, st installState) {
+		w.SetContent(buildMainUI(rel, checkErr, st, func() { startVersionCheck() }))
 	}
 
 	// 打开后：先显示转圈圈闪屏查询当前版本信息，
-	// 完成后切到主界面展示最新版本；全部源不可用时展示重试。
+	// 完成后切到主界面展示最新版本；查询失败时同样进主界面，
+	// 只在右侧面板展示失败原因与重试，不整屏报错。
 	startVersionCheck = func() {
 		w.SetContent(checkingView())
 		shownAt := time.Now() // 记录闪屏开始时刻，用于保证最短展示时长
@@ -275,11 +281,7 @@ func main() {
 			}
 
 			fyne.Do(func() {
-				if err != nil {
-					showFailed(err)
-					return
-				}
-				showMain(rel, st)
+				showMain(rel, err, st)
 			})
 		}()
 	}
