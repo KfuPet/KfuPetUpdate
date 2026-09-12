@@ -278,13 +278,42 @@ func isExecutableBusy(exePath string) bool {
 	return false
 }
 
+// 下载重试策略。
+const (
+	// downloadAttempts 是下载最多尝试的次数。
+	downloadAttempts = 3
+	// downloadRetryDelay 是两次尝试之间的等待，给瞬时故障一点恢复时间。
+	downloadRetryDelay = 2 * time.Second
+)
+
 // downloadArtifact 把安装包下载到临时文件，返回其路径。
+// 连接被重置、握手超时这类瞬时失败很常见，因此最多尝试 downloadAttempts 次。
 func downloadArtifact(ctx context.Context, art *artifact, report progressFunc) (string, error) {
+	var err error
+	for attempt := 1; attempt <= downloadAttempts; attempt++ {
+		var path string
+		if path, err = downloadFromURL(ctx, art.DownloadURL, art, report); err == nil {
+			return path, nil
+		}
+		// ctx 已结束（取消或超时）时再试没有意义，直接返回最后一次的失败原因。
+		if ctx.Err() != nil {
+			return "", err
+		}
+		if attempt < downloadAttempts && !sleepContext(ctx, downloadRetryDelay) {
+			return "", err
+		}
+	}
+	return "", err
+}
+
+// downloadFromURL 从指定地址下载一次，返回落地的临时文件路径。
+func downloadFromURL(ctx context.Context, url string, art *artifact, report progressFunc) (string, error) {
 	if report != nil {
+		// 每次尝试都从 0 重新汇报，重试时进度条会重走一遍。
 		report(installProgress{Stage: stageDownloading, Total: art.Size})
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, art.DownloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -321,6 +350,18 @@ func downloadArtifact(ctx context.Context, art *artifact, report progressFunc) (
 		return "", err
 	}
 	return path, nil
+}
+
+// sleepContext 等待 d，返回 false 表示等待期间 ctx 已结束。
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // 进度汇报的触发粒度：达到字节数或时间其一即汇报，
