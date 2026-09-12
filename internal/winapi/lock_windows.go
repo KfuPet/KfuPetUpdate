@@ -1,6 +1,8 @@
 //go:build windows
 
-package main
+// Package winapi 封装本程序用到的 Windows 系统能力：单实例锁、系统弹窗、
+// 进程启动与等待。非 Windows 平台提供空实现，仅保证可编译。
+package winapi
 
 import (
 	"errors"
@@ -26,12 +28,12 @@ type instanceLock struct {
 	handle windows.Handle
 }
 
-// acquireInstanceLock 获取单实例锁，最长等待 timeout。
+// AcquireInstanceLock 获取单实例锁，最长等待 timeout。
 // 同一时刻只允许一个 updater 实例运行：两个实例同时安装/卸载会争抢同一个
 // 安装目录，轻则报错、重则留下删了一半的目录；此外常驻副本被自身占用时，
 // 别的实例既替换不了也删不掉安装目录。
 // 临时副本接力时原进程会先放锁，所以这里必须留一段等待来覆盖交棒的空档。
-func acquireInstanceLock(timeout time.Duration) error {
+func AcquireInstanceLock(timeout time.Duration) error {
 	name, err := windows.UTF16PtrFromString(singleInstanceMutexName)
 	if err != nil {
 		return err
@@ -60,9 +62,9 @@ func acquireInstanceLock(timeout time.Duration) error {
 	}
 }
 
-// releaseInstanceLock 放掉单实例锁。没持有或重复调用都没有副作用。
+// ReleaseInstanceLock 放掉单实例锁。没持有或重复调用都没有副作用。
 // 交棒给临时副本前必须调用：副本要接着干活，得先拿得到这把锁。
-func releaseInstanceLock() {
+func ReleaseInstanceLock() {
 	if currentLock == nil {
 		return
 	}

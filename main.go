@@ -21,6 +21,8 @@ import (
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"kfupet-installer/internal/winapi"
 )
 
 //go:embed icon/Startlogo.png
@@ -539,11 +541,11 @@ func run() int {
 
 	// 同一时刻只允许一个实例：两个实例同时安装/卸载会争抢同一个安装目录，
 	// 而且常驻副本正在运行时，别的实例既替换不了也删不掉安装目录。
-	if err := acquireInstanceLock(instanceLockTimeout); err != nil {
-		notifyError("KfuPet 无法启动", err.Error())
+	if err := winapi.AcquireInstanceLock(instanceLockTimeout); err != nil {
+		winapi.NotifyError("KfuPet 无法启动", err.Error())
 		return 1
 	}
-	defer releaseInstanceLock()
+	defer winapi.ReleaseInstanceLock()
 	// 若自身是交棒过来的临时副本，退出后把自己的目录也删掉。
 	defer removeTempDirLater()
 
@@ -553,7 +555,7 @@ func run() int {
 	if cmd.modifiesInstallDir() {
 		if dir := resolveInstallDir(cmd); dir != "" && isSelfWithin(dir) {
 			if err := relayToTemp(cmd); err != nil {
-				notifyError("KfuPet 无法继续", err.Error())
+				winapi.NotifyError("KfuPet 无法继续", err.Error())
 				return 1
 			}
 			return 0
@@ -565,14 +567,14 @@ func run() int {
 	//   TODO: 等 --wait-pid 指定的进程退出 → 查询最新版 → 与本地版本比较 →
 	//         需要时整体安装，并在安装后重新放置安装目录内的常驻副本。
 	if cmd.Action == actionUpdate {
-		notifyInfo("KfuPet 更新", "升级功能尚未实现，请先使用安装向导完成安装。")
+		winapi.NotifyInfo("KfuPet 更新", "升级功能尚未实现，请先使用安装向导完成安装。")
 		return 0
 	}
 
 	// 静默卸载：不带界面，直接删程序文件、快捷方式与安装信息。
 	if cmd.Action == actionUninstall && cmd.Yes {
 		if err := runSilentUninstall(cmd); err != nil {
-			notifyError("KfuPet 卸载失败", err.Error())
+			winapi.NotifyError("KfuPet 卸载失败", err.Error())
 			return 1
 		}
 		return 0

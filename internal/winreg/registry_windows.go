@@ -1,6 +1,8 @@
 //go:build windows
 
-package main
+// Package winreg 封装 KfuPet 的注册表读写：安装记录与 Windows 标准卸载入口。
+// 非 Windows 平台提供空实现，仅保证可编译。
+package winreg
 
 import (
 	"errors"
@@ -21,9 +23,9 @@ const (
 	valueVersion     = "DisplayVersion"
 )
 
-// readInstallRecord 读取注册表安装记录。
+// ReadInstallRecord 读取注册表安装记录。
 // 记录不存在时返回 (nil, nil)，表示"从未安装"，不算错误。
-func readInstallRecord() (*installRecord, error) {
+func ReadInstallRecord() (*InstallRecord, error) {
 	k, err := registry.OpenKey(registry.CURRENT_USER, installRegistryPath, registry.QUERY_VALUE)
 	if err != nil {
 		if errors.Is(err, registry.ErrNotExist) {
@@ -43,11 +45,11 @@ func readInstallRecord() (*installRecord, error) {
 	// 版本号缺失不视为致命，仅记录为空。
 	version, _, _ := k.GetStringValue(valueVersion)
 
-	return &installRecord{InstallPath: installPath, DisplayVersion: version}, nil
+	return &InstallRecord{InstallPath: installPath, DisplayVersion: version}, nil
 }
 
-// writeInstallRecord 写入（或覆盖）安装记录。
-func writeInstallRecord(rec installRecord) error {
+// WriteInstallRecord 写入（或覆盖）安装记录。
+func WriteInstallRecord(rec InstallRecord) error {
 	k, _, err := registry.CreateKey(registry.CURRENT_USER, installRegistryPath, registry.SET_VALUE)
 	if err != nil {
 		return err
@@ -60,8 +62,8 @@ func writeInstallRecord(rec installRecord) error {
 	return k.SetStringValue(valueVersion, rec.DisplayVersion)
 }
 
-// writeUninstallEntry 写入标准卸载入口。
-func writeUninstallEntry(e uninstallEntry) error {
+// WriteUninstallEntry 写入标准卸载入口。
+func WriteUninstallEntry(e UninstallEntry) error {
 	k, _, err := registry.CreateKey(registry.CURRENT_USER, uninstallEntryPath, registry.SET_VALUE)
 	if err != nil {
 		return err
@@ -83,8 +85,8 @@ func writeUninstallEntry(e uninstallEntry) error {
 	return nil
 }
 
-// clearUninstallEntry 删除标准卸载入口；项本就不存在时视为成功。
-func clearUninstallEntry() error {
+// ClearUninstallEntry 删除标准卸载入口；项本就不存在时视为成功。
+func ClearUninstallEntry() error {
 	if err := registry.DeleteKey(registry.CURRENT_USER, uninstallEntryPath); err != nil {
 		if errors.Is(err, registry.ErrNotExist) {
 			return nil
@@ -94,8 +96,8 @@ func clearUninstallEntry() error {
 	return nil
 }
 
-// clearInstallRecord 删除整个安装记录项；项本就不存在时视为成功。
-func clearInstallRecord() error {
+// ClearInstallRecord 删除整个安装记录项；项本就不存在时视为成功。
+func ClearInstallRecord() error {
 	if err := registry.DeleteKey(registry.CURRENT_USER, installRegistryPath); err != nil {
 		if errors.Is(err, registry.ErrNotExist) {
 			return nil

@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"kfupet-installer/internal/winapi"
 )
 
 // tempDirPrefix 是临时副本目录的固定前缀，用于启动时清理历史残留。
@@ -103,7 +105,7 @@ func samePath(a, b string) bool {
 // （通过追加的 --wait-pid），以免本进程的映像仍占用安装目录内的文件。
 func relayToTemp(c command) error {
 	// 副本要接着干活，得先拿得到单实例锁，所以交棒前必须先让出去。
-	releaseInstanceLock()
+	winapi.ReleaseInstanceLock()
 
 	tempDir, err := os.MkdirTemp("", tempDirPrefix)
 	if err != nil {
@@ -116,7 +118,7 @@ func relayToTemp(c command) error {
 	}
 
 	c.WaitPIDs = append(c.WaitPIDs, os.Getpid())
-	if err := startDetached(dst, tempDir, c.args()); err != nil {
+	if err := winapi.StartDetached(dst, tempDir, c.args()); err != nil {
 		return fmt.Errorf("启动临时副本失败：%w", err)
 	}
 	return nil
@@ -129,8 +131,18 @@ func waitForProcesses(pids []int) {
 		if pid <= 0 || pid == os.Getpid() {
 			continue
 		}
-		waitProcessExit(pid, processWaitTimeout)
+		winapi.WaitProcessExit(pid, processWaitTimeout)
 	}
+}
+
+// removeTempDirLater 安排在本进程退出后删掉临时副本目录。
+// 只在自己确实位于临时副本目录内时才动手，避免误删安装目录。
+func removeTempDirLater() {
+	dir := selfDir()
+	if dir == "" || !strings.HasPrefix(filepath.Base(dir), tempDirPrefix) {
+		return
+	}
+	winapi.RemoveTempDirLater(dir)
 }
 
 // cleanStaleTempDirs 清理遗留下来的临时副本目录。

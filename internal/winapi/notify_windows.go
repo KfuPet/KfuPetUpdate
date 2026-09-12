@@ -1,18 +1,18 @@
 //go:build windows
 
-package main
+package winapi
 
 import "golang.org/x/sys/windows"
 
-// notifyError 用系统弹窗报错。静默模式下程序既没有控制台也没有界面，
+// NotifyError 用系统弹窗报错。静默模式下程序既没有控制台也没有界面，
 // 出错必须让用户看得见，否则表现为"点了更新却什么都没发生"。
-func notifyError(title, message string) {
+func NotifyError(title, message string) {
 	messageBox(title, message, windows.MB_ICONERROR)
 }
 
-// notifyInfo 用系统弹窗告知成功结果。用于"界面已经退出、但操作才刚完成"的
+// NotifyInfo 用系统弹窗告知成功结果。用于"界面已经退出、但操作才刚完成"的
 // 交接场景（例如交棒给临时副本执行的卸载），否则用户会以为点什么都没发生。
-func notifyInfo(title, message string) {
+func NotifyInfo(title, message string) {
 	messageBox(title, message, windows.MB_ICONINFORMATION)
 }
 

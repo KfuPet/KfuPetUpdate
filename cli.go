@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"kfupet-installer/internal/winapi"
+	"kfupet-installer/internal/winreg"
 )
 
 // action 是命令行要求 updater 执行的动作。
@@ -94,7 +97,7 @@ func resolveInstallDir(c command) string {
 	if c.Dir != "" {
 		return c.Dir
 	}
-	if rec, err := readInstallRecord(); err == nil && rec != nil {
+	if rec, err := winreg.ReadInstallRecord(); err == nil && rec != nil {
 		return rec.InstallPath
 	}
 	return ""
@@ -115,7 +118,7 @@ func runSilentUninstall(c command) error {
 		return err
 	}
 	if c.Notify {
-		notifyInfo("KfuPet 卸载完成", "KfuPet 已卸载。")
+		winapi.NotifyInfo("KfuPet 卸载完成", "KfuPet 已卸载。")
 	}
 	return nil
 }

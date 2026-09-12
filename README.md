@@ -98,11 +98,9 @@ go build -ldflags -H=windowsgui -o dist/KfuPetUpdate.exe .
 - `uninstall.go`：卸载流程（删安装目录 → 删快捷方式 → 按选择删个人数据 → 删注册表）与标准卸载入口的内容组装
 - `cli.go`：命令行参数解析与静默卸载（`--action=update` 目前仅预留入口）
 - `selfcopy.go`：自身复制、临时副本接力与临时目录清理
-- `process_windows.go` / `process_other.go`：启动临时副本、等待目标进程退出、临时副本目录的自删安排
-- `lock_windows.go` / `lock_other.go`：单实例互斥锁（Windows 用命名互斥体，非 Windows 空实现）
-- `notify_windows.go` / `notify_other.go`：静默模式下的错误提示（Windows 用系统弹窗）
 - `shortcut_windows.go` / `shortcut_other.go`：快捷方式的创建与删除（Windows 实现与非 Windows 空实现）
-- `registry_windows.go` / `registry_other.go`：安装记录与标准卸载入口的注册表读写（Windows 实现与非 Windows 空实现）
+- `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动与等待、临时副本目录自删安排（`lock_*` / `notify_*` / `process_*` 三组，各含 Windows 实现与非 Windows 空实现）
+- `internal/winreg/`：注册表读写：安装记录与标准卸载入口（`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` / `registry_other.go` 为分平台实现）
 - `app.rc`：Windows 资源脚本（exe 图标 + 属性「详细信息」版本信息 + 应用程序清单）
 - `app.manifest`：应用程序清单（声明 `requireAdministrator`）
 - `app_windows_amd64.syso`：由 `app.rc` 编译出的 Windows 资源对象（已提交）

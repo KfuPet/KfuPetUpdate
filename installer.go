@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"kfupet-installer/internal/winreg"
 )
 
 // installTimeout 单次安装允许的最长时间。
@@ -196,14 +198,14 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	}
 
 	reportStage(report, stageRegistering)
-	rec := installRecord{InstallPath: installDir, DisplayVersion: normalizeVersion(rel.Version)}
+	rec := winreg.InstallRecord{InstallPath: installDir, DisplayVersion: normalizeVersion(rel.Version)}
 
 	// 先写标准卸载入口，再写自己的安装记录：后者是"已安装"的唯一依据，
 	// 放在最后写，前面的失败就不会留下"记录已存在但安装未完成"的状态。
-	if err := writeUninstallEntry(uninstallEntryFor(installDir, rec.DisplayVersion)); err != nil {
+	if err := winreg.WriteUninstallEntry(uninstallEntryFor(installDir, rec.DisplayVersion)); err != nil {
 		return installState{}, fmt.Errorf("写入卸载入口失败：%w", err)
 	}
-	if err := writeInstallRecord(rec); err != nil {
+	if err := winreg.WriteInstallRecord(rec); err != nil {
 		return installState{}, fmt.Errorf("写入安装信息失败：%w", err)
 	}
 

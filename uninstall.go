@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"kfupet-installer/internal/winreg"
 )
 
 // uninstallOptions 是卸载时用户的选择。
@@ -29,8 +31,8 @@ func userDataDirs() []string {
 // UninstallString 指向安装目录内的常驻副本，而不是当初被运行的那个 exe 路径：
 // 后者可能位于下载目录，用户一删「应用和功能」里的卸载就成了死链接。
 // 带上 --action=uninstall 让入口直接进卸载确认，不必再在主界面点一次。
-func uninstallEntryFor(installDir, version string) uninstallEntry {
-	return uninstallEntry{
+func uninstallEntryFor(installDir, version string) winreg.UninstallEntry {
+	return winreg.UninstallEntry{
 		DisplayName: "KfuPet",
 		// 路径可能含空格，用双引号包起来；注意别用 %q，它会把反斜杠转义掉。
 		UninstallString: fmt.Sprintf(`"%s" --action=uninstall`, filepath.Join(installDir, updaterName)),
@@ -76,10 +78,10 @@ func uninstallKfuPet(installDir string, opts uninstallOptions) error {
 		}
 	}
 
-	if err := clearInstallRecord(); err != nil {
+	if err := winreg.ClearInstallRecord(); err != nil {
 		return fmt.Errorf("删除安装信息失败：%w", err)
 	}
-	if err := clearUninstallEntry(); err != nil {
+	if err := winreg.ClearUninstallEntry(); err != nil {
 		return fmt.Errorf("删除卸载入口失败：%w", err)
 	}
 	return nil

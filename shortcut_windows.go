@@ -9,11 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-)
 
-// createNoWindow 对应 Win32 的 CREATE_NO_WINDOW，
-// 避免从 GUI 进程拉起 PowerShell 时闪出一个控制台窗口。
-const createNoWindow = 0x08000000
+	"kfupet-installer/internal/winapi"
+)
 
 // shortcutName 是快捷方式的文件名（不含 .lnk）。
 const shortcutName = "KfuPet"
@@ -28,7 +26,7 @@ func runPowerShell(script string, extraEnv []string) error {
 		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
 		"-Command", script)
 	cmd.Env = append(os.Environ(), extraEnv...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: winapi.CreateNoWindow}
 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%v（%s）", err, strings.TrimSpace(string(out)))
