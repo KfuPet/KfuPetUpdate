@@ -7,6 +7,7 @@ import (
 	"image/color"
 	_ "image/png"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -521,7 +522,69 @@ func buildFailedPanel(title string, failure error, retryLabel string, onRetry fu
 	)
 }
 
+// instanceLockTimeout 是抢单实例锁的最长等待。
+// 交棒时原进程会先放锁，通常毫秒级就能拿到，这个窗口只是覆盖那点空档；
+// 也不能太长——用户重复双击图标时要尽快得到"已在运行"的结论。
+const instanceLockTimeout = 3 * time.Second
+
 func main() {
+	os.Exit(run())
+}
+
+// run 是真正的入口，返回进程退出码。
+// 用返回值而不是就地 os.Exit，是为了让 defer（放锁、安排临时副本自删）都能执行。
+func run() int {
+	cmd := parseArgs(os.Args[1:])
+	cleanStaleTempDirs() // 兜底清理崩溃/被强杀留下的临时副本目录
+
+	// 同一时刻只允许一个实例：两个实例同时安装/卸载会争抢同一个安装目录，
+	// 而且常驻副本正在运行时，别的实例既替换不了也删不掉安装目录。
+	if err := acquireInstanceLock(instanceLockTimeout); err != nil {
+		notifyError("KfuPet 无法启动", err.Error())
+		return 1
+	}
+	defer releaseInstanceLock()
+	// 若自身是交棒过来的临时副本，退出后把自己的目录也删掉。
+	defer removeTempDirLater()
+
+	// 要删除/替换安装目录的动作，若自身正运行于该目录内（常驻副本），
+	// 先交棒给临时副本：运行中的 exe 映像被占用，不搬走就会卡住整个操作。
+	// （relayToTemp 内部会先放锁，副本才拿得到。）
+	if cmd.modifiesInstallDir() {
+		if dir := resolveInstallDir(cmd); dir != "" && isSelfWithin(dir) {
+			if err := relayToTemp(cmd); err != nil {
+				notifyError("KfuPet 无法继续", err.Error())
+				return 1
+			}
+			return 0
+		}
+	}
+
+	// 升级（--action=update）目前只预留入口：参数能解析、分支能进来，但不执行真实升级。
+	// 待版本比较（1.md 第二节）与桌宠侧拉起约定落地后再接上：
+	//   TODO: 等 --wait-pid 指定的进程退出 → 查询最新版 → 与本地版本比较 →
+	//         需要时整体安装，并在安装后重新放置安装目录内的常驻副本。
+	if cmd.Action == actionUpdate {
+		notifyInfo("KfuPet 更新", "升级功能尚未实现，请先使用安装向导完成安装。")
+		return 0
+	}
+
+	// 静默卸载：不带界面，直接删程序文件、快捷方式与安装信息。
+	if cmd.Action == actionUninstall && cmd.Yes {
+		if err := runSilentUninstall(cmd); err != nil {
+			notifyError("KfuPet 卸载失败", err.Error())
+			return 1
+		}
+		return 0
+	}
+
+	runGUI(cmd)
+	return 0
+}
+
+// runGUI 启动图形界面。
+// 传 --action=uninstall 时会直接弹出卸载确认框，省去在主界面再点一次。
+func runGUI(cmd command) {
 	a := app.New()
 	// 窗口图标：Windows 交给 exe 里由 app.rc 链入的多尺寸图标（含 16/20/24/32 等）。
 	// 这里若再设单张位图，Fyne 会按原图尺寸交给系统，标题栏/任务栏要 16/32 时
@@ -542,6 +605,7 @@ func main() {
 	var startVersionCheck func()
 	var startInstall func()
 	var startUninstall func(keepUserData bool)
+	uninstallPrompted := false // 标准卸载入口只自动弹一次确认框，避免重试查询时重复弹出
 
 	render = func() {
 		// 安装流程期间整屏切换到安装向导页，结束后再回到主界面。
@@ -629,6 +693,11 @@ func main() {
 				state.rel = rel
 				state.checkErr = err
 				render()
+				// 由标准卸载入口拉起时，直接进卸载确认，省得用户在主界面再点一次。
+				if cmd.Action == actionUninstall && state.st.Installed && !uninstallPrompted {
+					uninstallPrompted = true
+					confirmUninstall(w, startUninstall)
+				}
 			})
 		}()
 	}
@@ -674,6 +743,24 @@ func main() {
 	startUninstall = func(keepUserData bool) {
 		installDir := state.st.Path
 		if installDir == "" {
+			return
+		}
+
+		// 本程序就住在安装目录里时（常驻副本），它删不掉自己正在运行的文件：
+		// 交棒给临时副本静默卸载，本界面随即退出；结果由副本弹窗告知。
+		if isSelfWithin(installDir) {
+			err := relayToTemp(command{
+				Action:    actionUninstall,
+				Dir:       installDir,
+				Yes:       true,
+				PurgeData: !keepUserData,
+				Notify:    true,
+			})
+			if err != nil {
+				dialog.ShowError(err, w)
+				return
+			}
+			a.Quit()
 			return
 		}
 

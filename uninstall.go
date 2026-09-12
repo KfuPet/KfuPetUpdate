@@ -26,20 +26,15 @@ func userDataDirs() []string {
 }
 
 // uninstallEntryFor 组装标准卸载入口的内容。
-// UninstallString 指向本程序自身：在「应用和功能」里点卸载会打开本界面，
-// 再由用户点「卸载」确认（等 CLI 模式落地后可改成带参数直接卸载）。
+// UninstallString 指向安装目录内的常驻副本，而不是当初被运行的那个 exe 路径：
+// 后者可能位于下载目录，用户一删「应用和功能」里的卸载就成了死链接。
+// 带上 --action=uninstall 让入口直接进卸载确认，不必再在主界面点一次。
 func uninstallEntryFor(installDir, version string) uninstallEntry {
-	self, err := os.Executable()
-	if err != nil {
-		self = ""
-	} else {
-		self = `"` + self + `"` // 路径可能含空格，统一加引号
-	}
-
 	return uninstallEntry{
-		DisplayName:     "KfuPet",
+		DisplayName: "KfuPet",
+		// 路径可能含空格，用双引号包起来；注意别用 %q，它会把反斜杠转义掉。
+		UninstallString: fmt.Sprintf(`"%s" --action=uninstall`, filepath.Join(installDir, updaterName)),
 		DisplayVersion:  version,
-		UninstallString: self,
 		DisplayIcon:     filepath.Join(installDir, executableName),
 		Publisher:       "KfuPet",
 	}
@@ -53,6 +48,12 @@ func uninstallKfuPet(installDir string, opts uninstallOptions) error {
 	// 程序正在运行时文件被占用，先让用户退出。
 	if isExecutableBusy(filepath.Join(installDir, executableName)) {
 		return fmt.Errorf("KfuPet 正在运行，请先退出后再卸载")
+	}
+
+	// 自身就在安装目录里时删不掉自己，会留下删了一半的目录且注册表未清。
+	// 正常流程中调用方已交棒给临时副本，这里只是兜底。
+	if isSelfWithin(installDir) {
+		return fmt.Errorf("更新程序正运行于安装目录内，无法删除该目录")
 	}
 
 	if err := os.RemoveAll(installDir); err != nil {

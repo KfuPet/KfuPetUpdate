@@ -144,6 +144,12 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 		return installState{}, fmt.Errorf("KfuPet 正在运行，请先退出后再试")
 	}
 
+	// 自身就住在目标目录里时，整体替换会连自己一起搬走/覆盖，先拦下。
+	// 正常流程中调用方已交棒给临时副本，这里只是兜底。
+	if isSelfWithin(installDir) {
+		return installState{}, fmt.Errorf("更新程序正运行于安装目录内，请更换安装位置")
+	}
+
 	archivePath, err := downloadArtifact(ctx, art, report)
 	if err != nil {
 		return installState{}, err
@@ -174,6 +180,12 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	reportStage(report, stageApplying)
 	if err := applyStagedDir(stagingDir, installDir); err != nil {
 		return installState{}, err
+	}
+
+	// 把自身复制进安装目录常驻：卸载入口与 KfuPet 的「检查更新」都依赖这个
+	// 固定位置，用户删掉当初下载的 updater 也不影响后续卸载与升级。
+	if err := copySelf(filepath.Join(installDir, updaterName)); err != nil {
+		return installState{}, fmt.Errorf("放置更新程序失败：%w", err)
 	}
 
 	if opts.wantsShortcuts() {

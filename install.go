@@ -8,6 +8,10 @@ import (
 // executableName 是安装目录内用于校验程序是否仍存在的文件名。
 const executableName = "KfuPet.exe"
 
+// updaterName 是本程序在安装目录内的常驻副本名。
+// 安装完成后会把自身复制成这个名字，卸载入口与 KfuPet 的「检查更新」都指向它。
+const updaterName = "KfuPetUpdate.exe"
+
 // installRecord 是从注册表读到的原始安装记录。
 type installRecord struct {
 	InstallPath    string // 软件安装目录完整路径
