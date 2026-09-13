@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,8 +44,10 @@ var installStages = []installStage{
 
 // installOptions 是安装向导第二页收集的选项。
 type installOptions struct {
-	Desktop   bool // 创建桌面快捷方式
-	StartMenu bool // 创建开始菜单快捷方式
+	Desktop   bool   // 创建桌面快捷方式
+	StartMenu bool   // 创建开始菜单快捷方式
+	Offline   bool   // 离线安装：使用本地已有的安装包，不下载
+	Package   string // 离线安装包路径（Offline 为真时有效）
 }
 
 // wantsShortcuts 表示安装后是否需要创建快捷方式。
@@ -57,6 +60,10 @@ func stagesFor(opts installOptions) []installStage {
 	stages := make([]installStage, 0, len(installStages))
 	for _, s := range installStages {
 		if s == stageShortcuts && !opts.wantsShortcuts() {
+			continue
+		}
+		// 离线安装直接用本地安装包，跳过下载阶段。
+		if s == stageDownloading && opts.Offline {
 			continue
 		}
 		stages = append(stages, s)
@@ -130,16 +137,90 @@ func validateInstallDir(dir string) error {
 	return nil
 }
 
+// validateInstallOptions 校验向导第二页的选项：离线安装必须先选定安装包。
+func validateInstallOptions(opts installOptions) error {
+	if opts.Offline {
+		return validatePackageFile(opts.Package)
+	}
+	return nil
+}
+
+// validatePackageFile 校验离线安装包路径是否可用。
+func validatePackageFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("请先选择离线安装包")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return errors.New("所选离线安装包不存在或不可读")
+	}
+	if info.IsDir() {
+		return errors.New("所选路径是文件夹，请选择安装包文件")
+	}
+	return nil
+}
+
+// installerSource 是本次安装使用的安装包文件来源。
+type installerSource struct {
+	path    string    // 安装包在磁盘上的路径
+	art     *artifact // 用于校验的发布信息产物；离线且取不到发布信息时为 nil
+	cleanup func()    // 用完后的清理动作（在线安装删临时文件；离线安装无操作）
+}
+
+// resolveInstallerSource 准备本次安装要用的安装包：
+// 在线安装下载到临时文件（用完删除）；离线安装直接使用用户选定的本地文件。
+func resolveInstallerSource(ctx context.Context, rel *releaseInfo, opts installOptions, report progressFunc) (installerSource, error) {
+	if opts.Offline {
+		if err := validatePackageFile(opts.Package); err != nil {
+			return installerSource{}, err
+		}
+		// 能拿到发布信息时仍取其产物做 sha256 严格校验；断网取不到时留 nil，
+		// 由 verifyArchive 退回最低限度校验。
+		var art *artifact
+		if rel != nil {
+			if a, err := rel.artifactFor(); err == nil {
+				art = a
+			}
+		}
+		return installerSource{path: opts.Package, art: art, cleanup: func() {}}, nil
+	}
+
+	if rel == nil {
+		return installerSource{}, errors.New("缺少发布信息，无法在线安装")
+	}
+	art, err := rel.artifactFor()
+	if err != nil {
+		return installerSource{}, err
+	}
+	path, err := downloadArtifact(ctx, art, report)
+	if err != nil {
+		return installerSource{}, err
+	}
+	return installerSource{path: path, art: art, cleanup: func() { os.Remove(path) }}, nil
+}
+
+// versionPattern 用于从安装包文件名中提取形如 1.2.3 的版本号。
+var versionPattern = regexp.MustCompile(`\d+(?:\.\d+)+`)
+
+// versionForInstall 返回本次安装要记录的版本号。
+// 在线安装取自发布信息；离线安装若拿不到发布信息（断网），
+// 退回从安装包文件名解析（如 KfuPet-v0.0.9-windows-amd64.zip），再不行记"未知"。
+func versionForInstall(rel *releaseInfo, pkgPath string) string {
+	if rel != nil && rel.Version != "" {
+		return normalizeVersion(rel.Version)
+	}
+	if m := versionPattern.FindString(filepath.Base(pkgPath)); m != "" {
+		return m
+	}
+	return "未知"
+}
+
 // installKfuPet 把发布版安装到 installDir（升级走同一套流程）：
-// 下载 → 校验 → 解压 → 替换安装目录 → 创建快捷方式 → 写入注册表。
+// 获取安装包（在线下载 / 离线取本地文件）→ 校验 → 解压 → 替换安装目录 →
+// 创建快捷方式 → 写入注册表。
 // 过程中任何一步失败都不会留下半成品安装：新文件先落在暂存目录，
 // 全部就绪后才整体替换，替换失败会回滚旧目录。
 func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opts installOptions, report progressFunc) (installState, error) {
-	art, err := rel.artifactFor()
-	if err != nil {
-		return installState{}, err
-	}
-
 	// 正在运行时安装目录内的文件被占用，无法替换，先让用户退出。
 	// （优雅关闭协议尚未实现，这里只做拦截。）
 	if isExecutableBusy(filepath.Join(installDir, executableName)) {
@@ -152,13 +233,14 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 		return installState{}, fmt.Errorf("更新程序正运行于安装目录内，请更换安装位置")
 	}
 
-	archivePath, err := downloadArtifact(ctx, art, report)
+	// 取到本次要用的安装包：在线下载，或离线直接使用用户选定的本地文件。
+	src, err := resolveInstallerSource(ctx, rel, opts, report)
 	if err != nil {
 		return installState{}, err
 	}
-	defer os.Remove(archivePath)
+	defer src.cleanup()
 
-	if err := verifyArchive(archivePath, art, report); err != nil {
+	if err := verifyArchive(src.path, src.art, report); err != nil {
 		return installState{}, err
 	}
 
@@ -170,7 +252,7 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	defer os.RemoveAll(stagingDir)
 
 	reportStage(report, stageExtracting)
-	if err := extractZip(archivePath, stagingDir); err != nil {
+	if err := extractZip(src.path, stagingDir); err != nil {
 		return installState{}, err
 	}
 
@@ -198,7 +280,7 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	}
 
 	reportStage(report, stageRegistering)
-	rec := winreg.InstallRecord{InstallPath: installDir, DisplayVersion: normalizeVersion(rel.Version)}
+	rec := winreg.InstallRecord{InstallPath: installDir, DisplayVersion: versionForInstall(rel, src.path)}
 
 	// 先写标准卸载入口，再写自己的安装记录：后者是"已安装"的唯一依据，
 	// 放在最后写，前面的失败就不会留下"记录已存在但安装未完成"的状态。
@@ -425,37 +507,55 @@ func copyWithProgress(dst io.Writer, src io.Reader, total, expected int64, repor
 	return nil
 }
 
-// verifyArchive 校验下载到的安装包。
-// GitHub 会给出 sha256 摘要，有则比对；没有摘要时退回校验文件大小。
+// verifyArchive 校验安装包。
+// 有发布信息时：GitHub 给出 sha256 摘要就比对，没有摘要则退回校验文件大小；
+// 离线安装拿不到发布信息时（art 为 nil），退回最低限度校验——确认是可打开的 zip。
 func verifyArchive(path string, art *artifact, report progressFunc) error {
 	reportStage(report, stageVerifying)
 
-	f, err := os.Open(path)
+	if art != nil {
+		if want := sha256Hex(art.Digest); want != "" {
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			h := sha256.New()
+			_, copyErr := io.Copy(h, f)
+			f.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if got := hex.EncodeToString(h.Sum(nil)); got != want {
+				return fmt.Errorf("安装包校验失败：sha256 与发布信息不符")
+			}
+			return nil
+		}
+
+		if art.Size > 0 {
+			info, err := os.Stat(path)
+			if err != nil {
+				return err
+			}
+			if info.Size() != art.Size {
+				return fmt.Errorf("安装包校验失败：大小不符（预期 %d 字节，实际 %d 字节）",
+					art.Size, info.Size())
+			}
+		}
+	}
+
+	// 没有摘要可依据时，至少确认文件是可打开的 zip，把"选错文件"挡在解压之前。
+	return checkZipReadable(path)
+}
+
+// checkZipReadable 确认文件是可打开的 zip，供拿不到发布信息时做最低限度校验。
+func checkZipReadable(path string) error {
+	r, err := zip.OpenReader(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("安装包不可用：%w", err)
 	}
-	defer f.Close()
-
-	if want := sha256Hex(art.Digest); want != "" {
-		h := sha256.New()
-		if _, err := io.Copy(h, f); err != nil {
-			return err
-		}
-		if got := hex.EncodeToString(h.Sum(nil)); got != want {
-			return fmt.Errorf("安装包校验失败：sha256 与发布信息不符")
-		}
-		return nil
-	}
-
-	if art.Size > 0 {
-		info, err := f.Stat()
-		if err != nil {
-			return err
-		}
-		if info.Size() != art.Size {
-			return fmt.Errorf("安装包校验失败：大小不符（预期 %d 字节，实际 %d 字节）",
-				art.Size, info.Size())
-		}
+	defer r.Close()
+	if len(r.File) == 0 {
+		return errors.New("安装包为空")
 	}
 	return nil
 }
