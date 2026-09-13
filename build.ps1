@@ -1,15 +1,15 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    KfuPetUpdate 一键构建脚本。
+    KfuPetInstall 一键构建脚本。
 
 .DESCRIPTION
     按需重新生成 Windows 资源对象（app.rc / app.manifest / icon/app.ico 有更新时），
-    然后编译出带图标、版本信息与管理员清单的 dist/KfuPetUpdate.exe。
+    然后编译出带图标、版本信息与管理员清单的 dist/KfuPetInstall.exe。
 
 .EXAMPLE
     .\build.ps1
-    只打包到 dist/KfuPetUpdate.exe。
+    只打包到 dist/KfuPetInstall.exe。
 
 .EXAMPLE
     .\build.ps1 -Run
@@ -24,7 +24,7 @@ Set-Location -LiteralPath $PSScriptRoot
 
 $syso = 'app_windows_amd64.syso'
 $srcs = @('app.rc', 'app.manifest', 'icon/app.ico')
-$exe = Join-Path $PWD 'dist/KfuPetUpdate.exe'
+$exe = Join-Path $PWD 'dist/KfuPetInstall.exe'
 
 # 1. 仅当资源源文件比 syso 新时，才重新生成（需要 windres）
 $needGen = -not (Test-Path -LiteralPath $syso)
@@ -64,9 +64,9 @@ else {
 }
 
 # 2. 编译（-H=windowsgui 必须带上，否则双击运行会多出黑色控制台窗口）
-Write-Host '==> 编译 dist/KfuPetUpdate.exe' -ForegroundColor Cyan
+Write-Host '==> 编译 dist/KfuPetInstall.exe' -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path dist | Out-Null
-go build -ldflags '-H=windowsgui' -o dist/KfuPetUpdate.exe .
+go build -ldflags '-H=windowsgui' -o dist/KfuPetInstall.exe .
 if ($LASTEXITCODE -ne 0) { throw "go build 失败（退出码 $LASTEXITCODE）" }
 Write-Host "==> 完成：$exe" -ForegroundColor Green
 

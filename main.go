@@ -494,7 +494,7 @@ func checkingView() fyne.CanvasObject {
 	activity.Start()
 
 	label := widget.NewLabelWithStyle("正在查询当前版本信息…", fyne.TextAlignCenter, fyne.TextStyle{})
-	appName := smallText("KfuPetUpdate")
+	appName := smallText("KfuPetInstall")
 
 	return container.NewCenter(container.NewVBox(
 		container.NewCenter(container.NewGridWrap(fyne.NewSize(48, 48), activity)),
@@ -595,7 +595,7 @@ func runGUI(cmd command) {
 		a.SetIcon(fyne.NewStaticResource("appicon.png", appIconPNG))
 	}
 
-	w := a.NewWindow("KfuPetUpdate")
+	w := a.NewWindow("KfuPetInstall")
 	w.Resize(fyne.NewSize(600, 360))
 	w.SetFixedSize(true)
 	w.CenterOnScreen()

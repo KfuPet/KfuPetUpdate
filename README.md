@@ -1,4 +1,4 @@
-# KfuPetUpdate
+# KfuPetInstall
 这个是KfuPet配套的安装、更新、卸载程序
 
 >本工具为独立部署程序，仅通过网络获取并分发配套 KfuPet 程序。KfuPet 本体为独立作品，使用 AGPL-3.0 许可证，[详见其独立仓库](https://github.com/KfuPet/KfuPet)。
@@ -28,7 +28,7 @@ go generate ./...
 
 ### 运行与打包
 ```powershell
-# 一键构建（推荐）：资源有更新才重新生成 syso → 打包到 dist/KfuPetUpdate.exe
+# 一键构建（推荐）：资源有更新才重新生成 syso → 打包到 dist/KfuPetInstall.exe
 .\build.ps1
 
 # 打包后立即启动（会弹 UAC）
@@ -45,7 +45,7 @@ go run .
 # 打包（输出到 dist/）
 # -H=windowsgui 必须带上：否则 exe 是控制台子系统，双击运行会多出一个黑色命令行窗口
 New-Item -ItemType Directory -Force -Path dist | Out-Null
-go build -ldflags -H=windowsgui -o dist/KfuPetUpdate.exe .
+go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 ```
 
 ### 安装流程
@@ -56,7 +56,7 @@ go build -ldflags -H=windowsgui -o dist/KfuPetUpdate.exe .
 
 安装完成后询问是否立即启动 KfuPet：选「是」会拉起刚装好的程序（继承 updater 的管理员权限），选「否」则不启动；两者都会退出 updater。
 
-安装时会把 updater 自身复制一份到安装目录（`KfuPetUpdate.exe`）常驻：标准卸载入口与 KfuPet 的「检查更新」都指向这个固定位置，用户删掉当初下载的 updater 也不影响后续卸载与升级。
+分发包名为 `KfuPetInstall.exe`；安装时把 updater 自身复制一份到安装目录、并按固定名 `KfuPetUpdate.exe` 常驻：标准卸载入口与 KfuPet 的「检查更新」都指向这个固定位置（KfuPet 侧的更新约定认这个名字），用户删掉当初下载的 updater 也不影响后续卸载与升级。
 
 ### 卸载流程
 主界面点「卸载」→ 确认框（内含「保留个人数据」勾选，默认勾上）→ 删除安装目录 → 删除桌面/开始菜单快捷方式 → 按选择删除 `%APPDATA%\KfuPet` 等个人数据 → 最后删除注册表记录。

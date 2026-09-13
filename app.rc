@@ -1,4 +1,4 @@
-// Windows 资源定义：为 KfuPetUpdate.exe 设置图标。
+// Windows 资源定义：为 KfuPetInstall.exe 设置图标。
 // 通过 windres 编译为 *.syso，go build 会自动链入可执行文件。
 //
 // 1         —— 数字 ID 最小，作为 exe 文件图标（资源管理器/任务栏固定时显示）
@@ -12,7 +12,7 @@ GLFW_ICON ICON "icon/app.ico"
 // 资源类型 24 即 RT_MANIFEST，名称必须为 1，Windows 才认。
 1 24 "app.manifest"
 
-// Windows 资源定义：为 KfuPetUpdate.exe 设置「属性 → 详细信息」页内容。
+// Windows 资源定义：为 KfuPetInstall.exe 设置「属性 → 详细信息」页内容。
 1 VERSIONINFO
 FILEVERSION     1,0,0,0
 PRODUCTVERSION  1,0,0,0
@@ -30,10 +30,10 @@ BEGIN
             VALUE "CompanyName",      "KfuPet"
             VALUE "FileDescription",  "KfuPet 安装 / 更新 / 卸载程序"
             VALUE "FileVersion",      "1.0.0"
-            VALUE "InternalName",     "KfuPetUpdate"
+            VALUE "InternalName",     "KfuPetInstall"
             VALUE "LegalCopyright",   "Copyright (C) 2026 KfuPet"
-            VALUE "OriginalFilename", "KfuPetUpdate.exe"
-            VALUE "ProductName",      "KfuPetUpdate"
+            VALUE "OriginalFilename", "KfuPetInstall.exe"
+            VALUE "ProductName",      "KfuPetInstall"
             VALUE "ProductVersion",   "1.0.0"
         END
     END
