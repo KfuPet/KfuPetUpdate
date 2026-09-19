@@ -7,8 +7,8 @@ rem  Mock an installed KfuPet from a release zip, so that the updater main
 rem  screen shows the "Upgrade" button (it only looks for the registry record).
 rem
 rem  It does what a real install does: unpack the zip into the install dir,
-rem  drop the updater there as the resident copy, create the desktop/start menu
-rem  shortcuts, and write the install record.
+rem  drop the updater there as the resident copy, create the all-users
+rem  desktop/start menu shortcuts, and write the machine-level install record.
 rem
 rem  Usage:
 rem    1. Put the KfuPet release zip next to this script.
@@ -96,15 +96,17 @@ if not exist "%DEST%\KfuPet.exe" (
     goto :die
 )
 
-rem ---- 3/5 create shortcuts (same folders and name as a real install) ----
+rem ---- 3/5 create shortcuts (all users, same folders and name as a real install) ----
 echo [3/5] creating shortcuts
-powershell -NoProfile -Command "$sh=New-Object -ComObject WScript.Shell; $t='%DEST%\KfuPet.exe'; $w='%DEST%'; foreach($f in 'Desktop','Programs'){ $d=[Environment]::GetFolderPath($f); if($d){ $l=$sh.CreateShortcut((Join-Path $d 'KfuPet.lnk')); $l.TargetPath=$t; $l.WorkingDirectory=$w; $l.Save() } }"
+powershell -NoProfile -Command "$sh=New-Object -ComObject WScript.Shell; $t='%DEST%\KfuPet.exe'; $w='%DEST%'; $dirs=@(); $d=[Environment]::GetFolderPath('CommonDesktopDirectory'); if($d){ $dirs+=$d }; $s=[Environment]::GetFolderPath('CommonStartMenu'); if($s){ $dirs+=(Join-Path $s 'Programs') }; foreach($d in $dirs){ $l=$sh.CreateShortcut((Join-Path $d 'KfuPet.lnk')); $l.TargetPath=$t; $l.WorkingDirectory=$w; $l.Save() }"
 if errorlevel 1 echo    (warning: shortcuts not created, continuing)
 
-rem ---- 4/5 write the install record (the only source of truth) ----
+rem ---- 4/5 write the install record (machine-level, matching a real install) ----
 echo [4/5] writing install record (local version %VERSION%)
-reg add "HKCU\Software\KfuPet" /v InstallPath /t REG_SZ /d "%DEST%" /f >nul
-reg add "HKCU\Software\KfuPet" /v DisplayVersion /t REG_SZ /d "%VERSION%" /f >nul
+reg add "HKLM\Software\KfuPet" /v InstallPath /t REG_SZ /d "%DEST%" /f >nul
+reg add "HKLM\Software\KfuPet" /v DisplayVersion /t REG_SZ /d "%VERSION%" /f >nul
+rem drop the legacy user-level record so the mock matches a clean install
+reg delete "HKCU\Software\KfuPet" /f >nul 2>&1
 
 echo [5/5] done: %DEST%
 echo.

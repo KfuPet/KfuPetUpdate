@@ -22,8 +22,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
-$syso = 'app_windows_amd64.syso'
-$srcs = @('app.rc', 'app.manifest', 'icon/app.ico')
+$syso = 'cmd/KfuPetInstall/app_windows_amd64.syso'
+$srcs = @('cmd/KfuPetInstall/app.rc', 'cmd/KfuPetInstall/app.manifest', 'cmd/KfuPetInstall/icon/app.ico')
 $exe = Join-Path $PWD 'dist/KfuPetInstall.exe'
 
 # 1. 仅当资源源文件比 syso 新时，才重新生成（需要 windres）
@@ -66,7 +66,7 @@ else {
 # 2. 编译（-H=windowsgui 必须带上，否则双击运行会多出黑色控制台窗口）
 Write-Host '==> 编译 dist/KfuPetInstall.exe' -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path dist | Out-Null
-go build -ldflags '-H=windowsgui' -o dist/KfuPetInstall.exe .
+go build -ldflags '-H=windowsgui' -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 if ($LASTEXITCODE -ne 0) { throw "go build 失败（退出码 $LASTEXITCODE）" }
 Write-Host "==> 完成：$exe" -ForegroundColor Green
 

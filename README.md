@@ -15,15 +15,15 @@
 
 ### Windows 资源对象（图标、版本信息、清单）
 
-`app_windows_amd64.syso` 由 `app.rc`（图标 + 版本信息 + `app.manifest`）经 `windres` 编译得到，**已随仓库提交**，clone 后可直接编译出带图标、版本信息和管理员权限要求的 exe，无需额外工具链。
+`cmd/KfuPetInstall/` 下的 `app_windows_amd64.syso` 由同目录的 `app.rc`（图标 + 版本信息 + `app.manifest`）经 `windres` 编译得到，**已随仓库提交**，clone 后可直接编译出带图标、版本信息和管理员权限要求的 exe，无需额外工具链。
 
-`app.manifest` 声明 `requireAdministrator`：安装要写入 `%ProgramFiles%` 并创建快捷方式，因此 **exe 每次启动都会弹 UAC**。
+同目录的 `app.manifest` 声明 `requireAdministrator`：安装要写入 `%ProgramFiles%` 并创建快捷方式，因此 **exe 每次启动都会弹 UAC**。
 
-**仅当修改了** **`icon/app.ico`、`app.rc`** **或** **`app.manifest`** **时**，才需重新生成并提交（需 MSYS2 的 `windres`）：
+**仅当修改了** **`cmd/KfuPetInstall/icon/app.ico`、`app.rc`** **或** **`app.manifest`** **时**，才需重新生成并提交（需 MSYS2 的 `windres`）：
 
 ```powershell
 go generate ./...
-# 等价于：windres -c 65001 app.rc -O coff -o app_windows_amd64.syso
+# 在 cmd/KfuPetInstall/ 下等价于：windres -c 65001 app.rc -O coff -o app_windows_amd64.syso
 ```
 
 > `-c 65001` 指定源文件为 UTF-8；缺省时 `windres` 会按本地代码页（GBK）解析，
@@ -44,12 +44,12 @@ go generate ./...
 ```powershell
 # 运行（启动即请求管理员权限 → 闪屏 → 从 GitHub 查询 KfuPet 最新版本 → 主界面）
 # 开发时 go run 的控制台附在当前终端上，属正常现象
-go run .
+go run ./cmd/KfuPetInstall
 
 # 打包（输出到 dist/）
 # -H=windowsgui 必须带上：否则 exe 是控制台子系统，双击运行会多出一个黑色命令行窗口
 New-Item -ItemType Directory -Force -Path dist | Out-Null
-go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
+go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 ```
 
 ### 安装流程
@@ -128,7 +128,6 @@ zip 放到项目根目录，双击 `test-upgrade.bat`（会自动请求管理员
 常驻副本的位置取自注册表 `HKLM\Software\KfuPet` 的 `InstallPath`——记录已从用户域迁到机器级，
 KfuPet 侧须读同一处（见「卸载流程」）。
 **顺序不能反**：要先确认拉起成功再退出，否则用户取消 UAC 时会留下「桌宠没了、更新也没做」的空档。
-完整约定见 [docs/upgrade-integration.md](docs/upgrade-integration.md)。
 
 `--action=uninstall --yes` 与 `--action=update` 若发现自身正运行在安装目录内（常驻副本被直接拉起），
 会先把自己复制到 `%TEMP%` 重启一个副本来执行（运行中的 exe 无法删除/替换自己），原进程退出后再动手；
@@ -141,27 +140,26 @@ KfuPet 侧须读同一处（见「卸载流程」）。
 ### 目录结构
 
 - `build.ps1`：一键构建脚本（按需重新生成 syso → 打包 exe，`-Run` 可打包后立即启动）；**须保持 UTF-8 with BOM 编码**，否则 PowerShell 5.1 按 GBK 解析会导致中文报错
-- `test-upgrade.bat`：本地测试升级用（把 KfuPet 的 zip 放在同目录，解压到默认安装目录、放常驻副本、建桌面/开始菜单快捷方式并写入安装记录，使主界面出现「升级」）；**内容须保持纯 ASCII**，cmd 解析含多字节字符的批处理会错位，中文会写坏脚本
-- `main.go`：界面层（启动闪屏、主界面、安装向导各页面）与界面状态机（安装/升级流程的分流）
-- `update.go`：版本查询逻辑（GitHub 源优先，自建服务器源为占位空壳，失败时回退），以及发布版产物（安装包）的解析与挑选
-- `install.go`：安装状态检测（读取注册表安装记录并校验安装目录内程序是否仍存在）
-- `installer.go`：安装流程（下载 → sha256 校验 → 解压 → 替换安装目录 → 创建快捷方式 → 写注册表；运行环境排在 KfuPet 本体之前）
-- `upgrade.go`：升级流程（等桌宠让位 → 查询最新版本 → 版本比较 → 复用安装流程整体替换），含等待超时后的强杀询问
-- `upgrade_ui.go`：升级界面（进行中/完成/失败页、强杀询问弹窗、完成后自动拉起 KfuPet）
-- `uninstall.go`：卸载流程（删安装目录 → 删快捷方式 → 按选择删个人数据 → 删注册表）与标准卸载入口的内容组装
-- `cli.go`：命令行参数解析与静默卸载
-- `selfcopy.go`：自身复制、临时副本接力与临时目录清理
-- `shortcut_windows.go`：快捷方式的创建与删除（经 PowerShell 调 `WScript.Shell`）
+- `test-upgrade.bat`：本地测试升级用（把 KfuPet 的 zip 放在同目录，解压到默认安装目录、放常驻副本、建公共桌面/开始菜单快捷方式并写入机器级安装记录，使主界面出现「升级」）；**内容须保持纯 ASCII**，cmd 解析含多字节字符的批处理会错位，中文会写坏脚本
+- `cmd/KfuPetInstall/`：主程序（`package main`），唯一的编译入口；资源与图标必须与包放在同一目录，才能被链入 exe
+  - `main.go`：界面层（启动闪屏、主界面、安装向导各页面）与界面状态机（安装/升级流程的分流）
+  - `update.go`：版本查询逻辑（GitHub 源优先，自建服务器源为占位空壳，失败时回退），以及发布版产物（安装包）的解析与挑选
+  - `install.go`：安装状态检测（读取注册表安装记录并校验安装目录内程序是否仍存在）
+  - `installer.go`：安装流程（下载 → sha256 校验 → 解压 → 替换安装目录 → 创建快捷方式 → 写注册表；运行环境排在 KfuPet 本体之前）
+  - `upgrade.go`：升级流程（等桌宠让位 → 查询最新版本 → 版本比较 → 复用安装流程整体替换），含等待超时后的强杀询问
+  - `upgrade_ui.go`：升级界面（进行中/完成/失败页、强杀询问弹窗、完成后自动拉起 KfuPet）
+  - `uninstall.go`：卸载流程（删安装目录 → 删快捷方式 → 按选择删个人数据 → 删注册表）与标准卸载入口的内容组装
+  - `cli.go`：命令行参数解析与静默卸载
+  - `selfcopy.go`：自身复制、临时副本接力与临时目录清理
+  - `shortcut_windows.go`：快捷方式的创建与删除（经 PowerShell 调 `WScript.Shell`）
+  - `app.rc`：Windows 资源脚本（exe 图标 + 属性「详细信息」版本信息 + 应用程序清单）
+  - `app.manifest`：应用程序清单（声明 `requireAdministrator`）
+  - `app_windows_amd64.syso`：由 `app.rc` 编译出的 Windows 资源对象（已提交）
+  - `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`app.ico` exe 多尺寸图标）
 - `internal/version/`：版本号归一与比较（去 `v` 前缀、按段数字比较、预发布后缀）；升级判断与运行环境版本挑选共用这一套
 - `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动/等待/强制终止、临时副本目录自删安排（`lock_*` / `notify_*` / `process_*` 三组）
-- `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、旋转点阵指示器（`spinner.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
+- `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、缓动曲线（`easing.go`）、旋转点阵指示器（`spinner.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
 - `internal/dotnet/`：运行环境（.NET 桌面运行时）：共享框架目录探测与版本挑选（`Detect`）、静默安装（`InstallSilent`）、候选下载地址与手动下载引导地址
 - `internal/winreg/`：注册表读写：安装记录与标准卸载入口（写机器级 HKLM、读兼容 HKCU，固定 64 位视图；`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
-- `app.rc`：Windows 资源脚本（exe 图标 + 属性「详细信息」版本信息 + 应用程序清单）
-- `app.manifest`：应用程序清单（声明 `requireAdministrator`）
-- `app_windows_amd64.syso`：由 `app.rc` 编译出的 Windows 资源对象（已提交）
-- `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`app.ico` exe 多尺寸图标、`appicon.png` 备用图标素材）
-- `docs/`：`upgrade-integration.md` 为 KfuPet 侧接入「立即更新」的说明（注册表定位常驻副本、`ShellExecute` 拉起约定、UAC 取消处理与已知坑）
-- `scripts/`：本地调试脚本。`test-upgrade.ps1` 用打包好的 zip 造出「已安装 + 旧版本」状态以测试升级，`-SimulatePetLaunch` 可复现桌宠拉起更新的路径（**须保持 UTF-8 with BOM 编码**，理由同 `build.ps1`）
 - `dist/`：打包输出目录（`go build -o dist/`，已在 `.gitignore` 忽略）
 
