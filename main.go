@@ -170,12 +170,15 @@ func publishLine(rel *releaseInfo) string {
 type installPhase int
 
 const (
-	phaseIdle      installPhase = iota // 不在安装流程中，展示主界面
-	phaseChooseDir                     // 向导第一步：选择安装位置
-	phaseOptions                       // 向导第二步：安装选项
-	phaseRunning                       // 正在安装
-	phaseDone                          // 安装完成
-	phaseFailed                        // 安装失败
+	phaseIdle          installPhase = iota // 不在安装流程中，展示主界面
+	phaseChooseDir                         // 向导第一步：选择安装位置
+	phaseOptions                           // 向导第二步：安装选项
+	phaseRunning                           // 正在安装
+	phaseDone                              // 安装完成
+	phaseFailed                            // 安装失败
+	phaseUpgrading                         // 正在升级
+	phaseUpgradeDone                       // 升级完成
+	phaseUpgradeFailed                     // 升级失败
 )
 
 // appState 是界面的全部可变状态；每次变化后整体重建界面。
@@ -190,6 +193,7 @@ type appState struct {
 	opts       installOptions  // 本次安装的选项
 	progress   installProgress // 最近一次进度汇报
 	installErr error           // 安装失败原因
+	waitKfuPet bool            // 升级是否由桌宠拉起：决定升级步骤清单是否含「等待退出」
 }
 
 // uiHandlers 是主界面各操作入口。
@@ -264,9 +268,9 @@ func buildInstallView(s appState, h flowHandlers) fyne.CanvasObject {
 	case phaseOptions:
 		return buildOptionsPage(s, h)
 	case phaseDone:
-		return buildInstallDoneView(s, h)
+		return buildDoneView("安装完成", s.st.Version, s.targetDir, h.launch, h.quit)
 	case phaseFailed:
-		return buildInstallFailedView(s, h)
+		return buildInstallFailedView("安装失败", s.installErr, s.targetDir, h.retry, h.backToMain)
 	default:
 		return buildChooseDirPage(s, h)
 	}
@@ -384,11 +388,12 @@ type installingView struct {
 	stages    []installStage
 }
 
-// newInstallingView 组装安装中页面，并按当前进度初始化显示。
-func newInstallingView(s appState) *installingView {
-	v := &installingView{stages: stagesFor(s.opts)}
+// newInstallingView 组装进行中页面，并按当前进度初始化显示。
+// 安装与升级共用这套页面，标题与步骤清单由调用方给出（两者步骤不同）。
+func newInstallingView(title string, stages []installStage, s appState) *installingView {
+	v := &installingView{stages: stages}
 
-	caption := smallText("KfuPet 安装中")
+	caption := smallText(title)
 
 	v.stage = canvas.NewText(" ", theme.Color(theme.ColorNameForeground))
 	v.stage.TextSize = 20
@@ -456,16 +461,16 @@ func stageNames(stages []installStage) []string {
 	return names
 }
 
-// buildInstallDoneView 展示安装结果，并询问是否立即启动。
-// 两个选项都会退出 updater：安装这一步已经完成，没有留在界面上的必要。
-func buildInstallDoneView(s appState, h flowHandlers) fyne.CanvasObject {
-	title := canvas.NewText("安装完成", theme.Color(theme.ColorNameForeground))
+// buildDoneView 展示安装/升级结果，并询问是否立即启动 KfuPet。
+// 两个选项都会退出 updater：流程已经走完，没有留在界面上的必要。
+func buildDoneView(doneTitle, version, installDir string, onLaunch, onQuit func()) fyne.CanvasObject {
+	title := canvas.NewText(doneTitle, theme.Color(theme.ColorNameForeground))
 	title.TextSize = 24
 	title.TextStyle = fyne.TextStyle{Bold: true}
 
-	version := " "
-	if s.st.Version != "" {
-		version = "KfuPet " + s.st.Version
+	versionText := " "
+	if version != "" {
+		versionText = "KfuPet " + version
 	}
 
 	question := widget.NewLabel("是否立即启动 KfuPet？")
@@ -475,26 +480,26 @@ func buildInstallDoneView(s appState, h flowHandlers) fyne.CanvasObject {
 		layout.NewSpacer(),
 		container.NewCenter(container.NewGridWrap(fyne.NewSize(72, 72), uifx.NewResultMark(true))),
 		container.NewCenter(title),
-		container.NewCenter(smallText(version)),
-		container.NewCenter(smallText("安装位置："+s.targetDir)),
+		container.NewCenter(smallText(versionText)),
+		container.NewCenter(smallText("安装位置："+installDir)),
 		container.NewCenter(question),
 		container.NewCenter(container.NewHBox(
-			actionButton("是", h.launch),
-			actionButton("否", h.quit),
+			actionButton("是", onLaunch),
+			actionButton("否", onQuit),
 		)),
 		layout.NewSpacer(),
 	)
-	// 彩带层盖在内容之上，安装成功时炸开一次庆祝。
+	// 彩带层盖在内容之上，流程成功时炸开一次庆祝。
 	return container.NewStack(content, uifx.NewConfetti())
 }
 
-// buildInstallFailedView 展示安装失败原因与重试、返回入口。
-func buildInstallFailedView(s appState, h flowHandlers) fyne.CanvasObject {
-	title := widget.NewLabelWithStyle("安装失败", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+// buildInstallFailedView 展示流程失败原因与重试、返回入口；安装与升级共用。
+func buildInstallFailedView(failTitle string, failure error, installDir string, onRetry, onBack func()) fyne.CanvasObject {
+	title := widget.NewLabelWithStyle(failTitle, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
 	reason := "未知错误"
-	if s.installErr != nil {
-		reason = s.installErr.Error()
+	if failure != nil {
+		reason = failure.Error()
 	}
 	detail := widget.NewLabel("原因：" + reason)
 	detail.Alignment = fyne.TextAlignCenter
@@ -505,10 +510,10 @@ func buildInstallFailedView(s appState, h flowHandlers) fyne.CanvasObject {
 		container.NewCenter(container.NewGridWrap(fyne.NewSize(72, 72), uifx.NewResultMark(false))),
 		title,
 		detail,
-		container.NewCenter(smallText("安装位置："+s.targetDir)),
+		container.NewCenter(smallText("安装位置："+installDir)),
 		container.NewCenter(container.NewHBox(
-			actionButton("重试", h.retry),
-			actionButton("返回", h.backToMain),
+			actionButton("重试", onRetry),
+			actionButton("返回", onBack),
 		)),
 		layout.NewSpacer(),
 	)
@@ -718,13 +723,11 @@ func run() int {
 		}
 	}
 
-	// 升级（--action=update）目前只预留入口：参数能解析、分支能进来，但不执行真实升级。
-	// 待版本比较（1.md 第二节）与桌宠侧拉起约定落地后再接上：
-	//   TODO: 等 --wait-pid 指定的进程退出 → 查询最新版 → 与本地版本比较 →
-	//         需要时整体安装，并在安装后重新放置安装目录内的常驻副本。
-	if cmd.Action == actionUpdate {
-		winapi.NotifyInfo("KfuPet 更新", "升级功能尚未实现，请先使用安装向导完成安装。")
-		return 0
+	// 升级（--action=update）走图形界面：进界面后直接进升级流程（见 runGUI）。
+	// 安装位置取不到就没得升，此时还没有窗口可用，只能弹系统提示。
+	if cmd.Action == actionUpdate && resolveInstallDir(cmd) == "" {
+		winapi.NotifyError("KfuPet 升级失败", "未找到 KfuPet 的安装位置，无法升级。")
+		return 1
 	}
 
 	// 静默卸载：不带界面，直接删程序文件、快捷方式与安装信息。
@@ -759,12 +762,25 @@ func runGUI(cmd command) {
 	var render func()
 	var startVersionCheck func()
 	var startInstall func()
+	var startUpgrade func(dir string)
 	var startUninstall func(keepUserData bool)
-	var installing *installingView // 安装中页面：原地更新，不随 render 重建
+	var installing *installingView // 进行中页面（安装/升级）：原地更新，不随 render 重建
+	var upgradeDir string          // 本次升级的目标安装目录，失败重试时复用
 	uninstallPrompted := false     // 标准卸载入口只自动弹一次确认框，避免重试查询时重复弹出
 
 	// 闪屏 Logo 渐隐结束后，主界面左上角 Logo 接着渐显；为真时下一次渲染走这条衔接。
 	logoFadePending := false
+
+	// backToMain 回主界面。由桌宠拉起（--action=update）的升级没做过版本查询，
+	// 而主界面要展示版本信息，此时直接渲染是空的，得先补一次查询。
+	backToMain := func() {
+		if state.rel == nil {
+			startVersionCheck()
+			return
+		}
+		state.phase = phaseIdle
+		render()
+	}
 
 	// 页面切换时整页淡入；同一阶段内的重建（如勾选选项）不重复播放。
 	lastPhase := installPhase(-1)
@@ -777,13 +793,43 @@ func runGUI(cmd command) {
 	}
 
 	render = func() {
-		// 安装流程期间整屏切换到安装向导页，结束后再回到主界面。
+		// 安装向导与升级流程期间整屏切换到流程页，结束后再回到主界面。
 		if state.phase != phaseIdle {
-			if state.phase == phaseRunning {
+			if state.phase == phaseRunning || state.phase == phaseUpgrading {
 				if installing == nil {
-					installing = newInstallingView(state)
+					// 进行中的页面在原地更新，不随 render 重建：步骤画勾、流光等
+					// 动画才能连续播放。
+					if state.phase == phaseUpgrading {
+						installing = newUpgradingView(state)
+					} else {
+						installing = newInstallingView("KfuPet 安装中", stagesFor(state.opts), state)
+					}
 				}
 				setContent(installing.root)
+				return
+			}
+			// 升级的两张结果页不属于安装向导，单独分流。
+			if state.phase == phaseUpgradeDone {
+				if state.waitKfuPet {
+					// 桌宠拉起的那条路径没人守着界面，升完自动把桌宠拉回来。
+					setContent(buildUpgradeDoneView(state.st.Version, upgradeDir))
+					return
+				}
+				// 手动升级：同安装一样问一句是否立即启动。
+				setContent(buildDoneView("升级完成", state.st.Version, upgradeDir,
+					func() {
+						if err := launchKfuPet(upgradeDir); err != nil {
+							dialog.ShowError(err, w)
+							return
+						}
+						a.Quit()
+					},
+					func() { a.Quit() }))
+				return
+			}
+			if state.phase == phaseUpgradeFailed {
+				setContent(buildInstallFailedView("升级失败", state.installErr, upgradeDir,
+					func() { startUpgrade(upgradeDir) }, backToMain))
 				return
 			}
 			setContent(buildInstallView(state, flowHandlers{
@@ -862,7 +908,20 @@ func runGUI(cmd command) {
 				confirmInstallEnv(w, begin)
 			},
 			upgrade: func() {
-				// TODO: 升级逻辑（沿用注册表记录的安装目录，不再询问）
+				// 升级要整体替换整个安装目录，KfuPet 在跑就替换不掉。
+				// 这里不做自动关闭，直接让用户先退出（与卸载策略一致，也不会打断
+				// 用户正在做的事）；由桌宠拉起的那条路径则靠 --wait-pid 等它让位。
+				if kfuPetRunning(state.st.Path) {
+					dialog.ShowError(fmt.Errorf("KfuPet 正在运行，请先退出后再升级"), w)
+					return
+				}
+				// 沿用注册表记录的安装目录，不再询问位置与选项；动手前先确认一次。
+				confirmUpgrade(w, func(continueUpdate bool) {
+					if !continueUpdate {
+						return // 留在主界面，什么都不做
+					}
+					startUpgrade(state.st.Path)
+				})
 			},
 			uninstall: func() { confirmUninstall(w, startUninstall) },
 		})
@@ -987,6 +1046,60 @@ func runGUI(cmd command) {
 		}()
 	}
 
+	// 升级：等桌宠让位（由 --wait-pid 指定）→ 查最新版本 → 版本比较 → 需要时整体安装。
+	// 目录沿用注册表记录，不问位置与选项；完成后自动拉起新版 KfuPet 并退出。
+	startUpgrade = func(dir string) {
+		if state.phase == phaseUpgrading {
+			return
+		}
+		upgradeDir = dir
+		state.waitKfuPet = len(cmd.WaitPIDs) > 0
+		state.phase = phaseUpgrading
+		state.installErr = nil
+		state.progress = installProgress{Stage: upgradeStages(state.waitKfuPet)[0]}
+		installing = nil // 强制重建进行中页面（步骤清单与安装不同）
+		render()
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+			defer cancel()
+
+			out, err := upgradeKfuPet(ctx, checker, dir, cmd.WaitPIDs, killConfirm(w), func(p installProgress) {
+				fyne.Do(func() {
+					state.progress = p
+					// 原地更新，不整页重建：步骤画勾、流光等动画才能连续播放
+					if installing != nil {
+						installing.update(p)
+					}
+				})
+			})
+
+			fyne.Do(func() {
+				installing = nil
+				switch {
+				case err != nil:
+					state.phase = phaseUpgradeFailed
+					state.installErr = err
+					render()
+				case !out.check.NeedUpgrade():
+					// 没有可升级的版本：先说清是「已是最新」还是「本机比线上新」，
+					// 再回主界面（重新检测安装状态，避免残留旧值）。
+					state.st = detectInstallState()
+					backToMain()
+					showUpgradeSkipped(w, out.check)
+				default:
+					state.st = out.result.state
+					state.phase = phaseUpgradeDone
+					render()
+					// 只有桌宠拉起的那条路径自动重启桌宠；手动升级停在完成页让用户自己选。
+					if state.waitKfuPet {
+						scheduleRelaunch(a, w, state.st.Path)
+					}
+				}
+			})
+		}()
+	}
+
 	// 卸载：确认之后删除程序文件、快捷方式与注册表记录。
 	startUninstall = func(keepUserData bool) {
 		installDir := state.st.Path
@@ -1037,6 +1150,26 @@ func runGUI(cmd command) {
 				dialog.ShowInformation("卸载完成", "KfuPet 已卸载。", w)
 			})
 		}()
+	}
+
+	// 由桌宠拉起（--action=update）时跳过主界面与闪屏：用户是在桌宠里点的「立即更新」，
+	// 再看一遍主界面没有意义。但动手前要先问一句——升级会重新下载安装包并整体替换
+	// 安装目录，不该在用户没点头的情况下就开始。
+	if cmd.Action == actionUpdate {
+		dir := resolveInstallDir(cmd)
+		w.SetContent(uifx.FadeIn(buildUpdateReadyView(), 280*time.Millisecond))
+		// 先让窗口可见再弹确认框，否则弹窗会挂在一个还没显示的窗口上。
+		w.Show()
+		confirmUpgrade(w, func(continueUpdate bool) {
+			if !continueUpdate {
+				// 用户改主意了：本次直接退出，不碰安装目录，也不去动桌宠。
+				a.Quit()
+				return
+			}
+			startUpgrade(dir)
+		})
+		a.Run()
+		return
 	}
 
 	startVersionCheck()

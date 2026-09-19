@@ -15,7 +15,7 @@ import (
 type action string
 
 const (
-	actionUpdate    action = "update"    // 升级：仅预留入口，尚未实现
+	actionUpdate    action = "update"    // 升级：等让位后按注册表目录整体升级，随后自动拉起 KfuPet
 	actionUninstall action = "uninstall" // 卸载：默认弹确认框，带 --yes 时静默执行
 )
 
@@ -87,9 +87,17 @@ func (c command) args() []string {
 }
 
 // modifiesInstallDir 表示该动作会删除或替换整个安装目录。
-// 自身若正运行于该目录内，必须先交棒给临时副本，否则会因映像被占用而失败。
+// 自身若正运行于该目录内（常驻副本），必须先交棒给临时副本，否则会因映像被占用而失败。
 func (c command) modifiesInstallDir() bool {
-	return c.Action == actionUninstall && c.Yes
+	switch c.Action {
+	case actionUpdate:
+		// 升级会整体替换安装目录，自己的映像同样占着位置。
+		return true
+	case actionUninstall:
+		return c.Yes
+	default:
+		return false
+	}
 }
 
 // resolveInstallDir 返回本次操作的目标安装目录：优先命令行指定，其次注册表记录。

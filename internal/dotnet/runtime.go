@@ -8,9 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 
+	"kfupet-installer/internal/version"
 	"kfupet-installer/internal/winapi"
 )
 
@@ -60,7 +59,7 @@ func Detect() State {
 			if !e.IsDir() || !satisfied(e.Name()) {
 				continue
 			}
-			if latest == "" || compareVersions(e.Name(), latest) > 0 {
+			if latest == "" || version.Compare(e.Name(), latest) > 0 {
 				latest = e.Name()
 			}
 		}
@@ -88,47 +87,8 @@ func dotnetRoots() []string {
 
 // satisfied 判断某个已安装的运行时版本能否运行 KfuPet：
 // KfuPet 面向 net8.0 构建，同一主版本的运行时即可（补丁号不限）。
-func satisfied(version string) bool {
-	parts := versionParts(version)
-	return len(parts) > 0 && parts[0] == RequiredMajor
-}
-
-// compareVersions 逐段按数字比较两个版本号，返回 -1 / 0 / 1；缺段按 0 处理。
-func compareVersions(a, b string) int {
-	pa, pb := versionParts(a), versionParts(b)
-	n := len(pa)
-	if len(pb) > n {
-		n = len(pb)
-	}
-	for i := 0; i < n; i++ {
-		va, vb := 0, 0
-		if i < len(pa) {
-			va = pa[i]
-		}
-		if i < len(pb) {
-			vb = pb[i]
-		}
-		if va != vb {
-			if va < vb {
-				return -1
-			}
-			return 1
-		}
-	}
-	return 0
-}
-
-// versionParts 把 "8.0.31" 解析成 [8 0 31]；遇到非数字段（如 "8.0.0-preview"）即停止。
-func versionParts(version string) []int {
-	var parts []int
-	for _, seg := range strings.Split(version, ".") {
-		n, err := strconv.Atoi(strings.TrimSpace(seg))
-		if err != nil {
-			break
-		}
-		parts = append(parts, n)
-	}
-	return parts
+func satisfied(v string) bool {
+	return version.Major(v) == RequiredMajor
 }
 
 // InstallSilent 静默安装运行环境安装包：不弹任何窗口，也不在装完后自动重启。

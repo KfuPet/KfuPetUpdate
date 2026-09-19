@@ -66,6 +66,35 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 
 分发包名为 `KfuPetInstall.exe`；安装时把 updater 自身复制一份到安装目录、并按固定名 `KfuPetUpdate.exe` 常驻：标准卸载入口与 KfuPet 的「检查更新」都指向这个固定位置（KfuPet 侧的更新约定认这个名字），用户删掉当初下载的 updater 也不影响后续卸载与升级。
 
+### 升级流程
+两条入口的**询问方式不同**，升级本身走同一套逻辑（等让位 → 查最新版本 → 版本比较 → 需要时整体安装）：
+
+- **桌宠拉起**：桌宠点「立即更新」后以管理员方式（`ShellExecute`，会弹一次 UAC）拉起常驻副本并传
+  `--action=update --wait-pid=<桌宠 PID>`，随后桌宠自行退出。更新程序拉起后**先弹窗问一句
+  「是否继续更新？」**：点「继续更新」才动手，点「暂不更新」直接退出、不碰任何文件（也不去动桌宠）。
+  确认后等桌宠退出（最多 **4 秒**，可打断：退出即继续），超时则弹窗询问是否**强行终止**；用户拒绝
+  则放弃本次升级。升完自动把桌宠拉回来，更新程序退出。
+- **主界面「升级」**：沿用注册表记录的安装目录，不问位置与选项，动手前同样弹窗确认「是否继续更新？」
+  （点「暂不更新」就留在主界面，什么都不做）。动手前检测 `KfuPet.exe` 是否在运行，在运行则报错要求
+  用户先退出（不做自动关闭）；自身若正住在安装目录里，同样先交棒到临时副本。**升完停在完成页，
+  问一句是否立即启动 KfuPet**（与安装完成页一致），不自动启动。
+
+版本比较：远端版本号去掉 `v` 前缀后**按段做数字比较**（`0.0.10 > 0.0.9`），段数不等按 0 补
+（`0.1` == `0.1.0`），`-beta` 这类预发布后缀算更小。远端等于本地提示「已是最新版本」，
+远端**低于**本地（本机比线上还新）提示「无需升级」——两种情况分开提示。
+
+升级复用安装流程：下载 → sha256 校验 → 解压到暂存目录 → 整目录替换（失败回滚）→ 重放常驻副本
+→ 写注册表。安装目录不变，因此不重建也不新增快捷方式，运行环境已装则跳过。完成后展示完成页
+（彩带庆祝）：桌宠拉起时自动重启桌宠，手动升级则由用户选择是否启动。进行中页面与安装共用，只是
+标题与步骤清单不同：由桌宠拉起时多出「等待 KfuPet 退出」「检查新版本」两步。
+
+KfuPet 侧的接入约定（注册表定位、拉起参数、UAC 取消处理等）见
+[docs/upgrade-integration.md](docs/upgrade-integration.md)。
+
+本地测试：只有打包出来的 zip、本机没有安装记录时，界面不会出现「升级」。把 KfuPet 打包出来的
+zip 放到项目根目录，双击 `test-upgrade.bat`（会自动请求管理员权限），即可按真实安装的样子造出
+「已安装 + 旧版本号 + 常驻副本 + 快捷方式」的状态去测升级。
+
 ### 卸载流程
 主界面点「卸载」→ 确认框（内含「保留个人数据」勾选，默认勾上）→ 删除安装目录 → 删除桌面/开始菜单快捷方式 → 按选择删除 `%APPDATA%\KfuPet` 等个人数据 → 最后删除注册表记录。
 
@@ -78,20 +107,22 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 
 | 参数 | 说明 |
 | --- | --- |
-| `--action=update` | 升级入口（**仅预留，尚未实现**，当前只会提示未实现） |
+| `--action=update` | 升级：直接进入升级流程（不展示主界面），按注册表记录的目录升级，完成后自动拉起 KfuPet |
 | `--action=uninstall` | 卸载：直接弹出卸载确认框 |
 | `--action=uninstall --yes` | 静默卸载（不询问） |
 | `--purge-data` | 与卸载搭配：一并删除个人数据 |
 | `--notify` | 与静默卸载搭配：完成后弹系统提示框（界面已退出时用） |
 | `--dir=<路径>` | 指定安装目录；缺省读注册表记录 |
-| `--wait-pid=<pid>` | 动手前等该进程退出，可重复传入 |
+| `--wait-pid=<pid>` | 动手前等该进程退出，可重复传入；升级时每个最多等 4 秒（可打断），超时询问是否强杀 |
 
-桌宠发起更新的约定（待升级实现后生效）：以管理员方式（`ShellExecute`，会弹一次 UAC）拉起
+桌宠发起升级的约定：以管理员方式（`ShellExecute`，会弹一次 UAC）拉起
 `%ProgramFiles%\KfuPet\KfuPetUpdate.exe --action=update --wait-pid=<桌宠 PID>`，随后桌宠自行退出。
+**顺序不能反**：要先确认拉起成功再退出，否则用户取消 UAC 时会留下「桌宠没了、更新也没做」的空档。
+完整约定见 [docs/upgrade-integration.md](docs/upgrade-integration.md)。
 
-`--action=uninstall --yes` 若发现自身正运行在安装目录内，会先把自己复制到 `%TEMP%` 重启一个副本来执行
-（运行中的 exe 无法删除/替换自己），原进程退出后再动手；副本退出时会自删该临时目录，
-崩溃留下的由下次启动兜底清理。
+`--action=uninstall --yes` 与 `--action=update` 若发现自身正运行在安装目录内（常驻副本被直接拉起），
+会先把自己复制到 `%TEMP%` 重启一个副本来执行（运行中的 exe 无法删除/替换自己），原进程退出后再动手；
+副本退出时会自删该临时目录，崩溃留下的由下次启动兜底清理。
 
 同一时刻只允许一个 updater 实例运行（命名互斥体 `Local\KfuPetUpdate-Singleton`）：两个实例同时
 安装/卸载会争抢同一个安装目录，而且常驻副本正在运行时，别的实例既替换不了也删不掉它。
@@ -99,15 +130,19 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 
 ### 目录结构
 - `build.ps1`：一键构建脚本（按需重新生成 syso → 打包 exe，`-Run` 可打包后立即启动）；**须保持 UTF-8 with BOM 编码**，否则 PowerShell 5.1 按 GBK 解析会导致中文报错
-- `main.go`：界面层（启动闪屏、主界面、安装向导各页面）
+- `test-upgrade.bat`：本地测试升级用（把 KfuPet 的 zip 放在同目录，解压到默认安装目录、放常驻副本、建桌面/开始菜单快捷方式并写入安装记录，使主界面出现「升级」）；**内容须保持纯 ASCII**，cmd 解析含多字节字符的批处理会错位，中文会写坏脚本
+- `main.go`：界面层（启动闪屏、主界面、安装向导各页面）与界面状态机（安装/升级流程的分流）
 - `update.go`：版本查询逻辑（GitHub 源优先，自建服务器源为占位空壳，失败时回退），以及发布版产物（安装包）的解析与挑选
 - `install.go`：安装状态检测（读取注册表安装记录并校验安装目录内程序是否仍存在）
 - `installer.go`：安装流程（下载 → sha256 校验 → 解压 → 替换安装目录 → 创建快捷方式 → 写注册表；运行环境排在 KfuPet 本体之前）
+- `upgrade.go`：升级流程（等桌宠让位 → 查询最新版本 → 版本比较 → 复用安装流程整体替换），含等待超时后的强杀询问
+- `upgrade_ui.go`：升级界面（进行中/完成/失败页、强杀询问弹窗、完成后自动拉起 KfuPet）
 - `uninstall.go`：卸载流程（删安装目录 → 删快捷方式 → 按选择删个人数据 → 删注册表）与标准卸载入口的内容组装
-- `cli.go`：命令行参数解析与静默卸载（`--action=update` 目前仅预留入口）
+- `cli.go`：命令行参数解析与静默卸载
 - `selfcopy.go`：自身复制、临时副本接力与临时目录清理
 - `shortcut_windows.go`：快捷方式的创建与删除（经 PowerShell 调 `WScript.Shell`）
-- `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动与等待、临时副本目录自删安排（`lock_*` / `notify_*` / `process_*` 三组）
+- `internal/version/`：版本号归一与比较（去 `v` 前缀、按段数字比较、预发布后缀）；升级判断与运行环境版本挑选共用这一套
+- `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动/等待/强制终止、临时副本目录自删安排（`lock_*` / `notify_*` / `process_*` 三组）
 - `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、旋转点阵指示器（`spinner.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
 - `internal/dotnet/`：运行环境（.NET 桌面运行时）：共享框架目录探测与版本挑选（`Detect`）、静默安装（`InstallSilent`）、候选下载地址与手动下载引导地址
 - `internal/winreg/`：注册表读写：安装记录与标准卸载入口（`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
@@ -115,4 +150,6 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 - `app.manifest`：应用程序清单（声明 `requireAdministrator`）
 - `app_windows_amd64.syso`：由 `app.rc` 编译出的 Windows 资源对象（已提交）
 - `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`app.ico` exe 多尺寸图标、`appicon.png` 备用图标素材）
+- `docs/`：`upgrade-integration.md` 为 KfuPet 侧接入「立即更新」的说明（注册表定位常驻副本、`ShellExecute` 拉起约定、UAC 取消处理与已知坑）
+- `scripts/`：本地调试脚本。`test-upgrade.ps1` 用打包好的 zip 造出「已安装 + 旧版本」状态以测试升级，`-SimulatePetLaunch` 可复现桌宠拉起更新的路径（**须保持 UTF-8 with BOM 编码**，理由同 `build.ps1`）
 - `dist/`：打包输出目录（`go build -o dist/`，已在 `.gitignore` 忽略）

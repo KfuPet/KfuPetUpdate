@@ -43,12 +43,34 @@ func RunHidden(exe string, args ...string) (int, error) {
 // WaitProcessExit 阻塞等待指定进程退出，最长 timeout。
 // 进程已退出、不存在或无权限打开时立即返回（都按"已退出"处理）。
 func WaitProcessExit(pid int, timeout time.Duration) {
+	WaitProcessExitTimeout(pid, timeout)
+}
+
+// WaitProcessExitTimeout 等待指定进程退出，返回它是否在 timeout 内退出。
+// 等待是可打断的：进程一退出立即返回 true，不会干等满 timeout。
+// 进程不存在或无权限打开时同样返回 true（都按"已退出"处理，由后续占用检测兜底报错）。
+func WaitProcessExitTimeout(pid int, timeout time.Duration) bool {
 	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
-		return
+		return true
 	}
 	defer windows.CloseHandle(h)
-	_, _ = windows.WaitForSingleObject(h, uint32(timeout/time.Millisecond))
+
+	event, err := windows.WaitForSingleObject(h, uint32(timeout/time.Millisecond))
+	// WAIT_OBJECT_0：进程已退出；WAIT_TIMEOUT / 出错：仍活着或状态未知。
+	return err == nil && event == windows.WAIT_OBJECT_0
+}
+
+// KillProcess 强制终止指定进程（TerminateProcess）。
+// 只在用户明确同意后才可调用：强杀不给对方保存状态的机会。
+func KillProcess(pid int) error {
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h)
+
+	return windows.TerminateProcess(h, 1)
 }
 
 // RemoveTempDirLater 安排在本进程退出后删掉 dir。
