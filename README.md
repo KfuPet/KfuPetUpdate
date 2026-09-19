@@ -49,7 +49,7 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 ```
 
 ### 安装流程
-主界面点「安装」进入向导：**选择安装位置**（默认 `%ProgramFiles%\KfuPet`，可浏览自定义）→ **安装选项**（桌面/开始菜单快捷方式 + 安装方式）→ 安装。安装目录整体替换（先落暂存目录再改名），下载带 sha256 校验，快捷方式经 PowerShell 调 `WScript.Shell` 创建。
+主界面点「安装」进入向导：**选择安装位置**（默认 `%ProgramFiles%\KfuPet`，可浏览自定义）→ **安装选项**（桌面/开始菜单快捷方式 + 安装方式）→ 安装。安装目录整体替换（先落暂存目录再改名），下载带 sha256 校验，快捷方式经 PowerShell 调 `WScript.Shell` 创建——建在"所有用户"目录（公共桌面 / 公共开始菜单），全机用户都能看到。
 
 安装包已不再自带 .NET 运行时，因此启动时会在查询版本的同时检测本机是否装有 KfuPet 所需的 **.NET 桌面运行时**（Microsoft Windows Desktop Runtime 8.0.x）。缺失时，主界面点「安装」会先弹窗询问是否一并安装（默认勾选，取消则放弃本次安装）。安装时运行环境排在 KfuPet 本体之前，用 `/install /quiet /norestart` **静默安装、不弹任何窗口**。
 
@@ -100,7 +100,7 @@ zip 放到项目根目录，双击 `test-upgrade.bat`（会自动请求管理员
 
 顺序是刻意的：**先把文件删干净，最后才删注册表**。中间任何一步失败都保留注册表，用户重试才有据可依；反过来会留下"显示未安装、文件却还在"的状态，用户以为卸干净了，比直接报错更糟。KfuPet 正在运行时会被先拦下。
 
-安装时还会写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\KfuPet`，使本程序出现在 Windows「设置 → 应用和功能」中。`UninstallString` 指向安装目录内的常驻副本并带 `--action=uninstall`，点卸载会直接弹出卸载确认框。
+安装时把安装记录与标准卸载入口都写进机器级注册表（HKLM）：前者在 `HKLM\Software\KfuPet`，后者在 `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KfuPet`，因此「设置 → 应用和功能」对全机用户都会列出本程序。读取时先看 HKLM，读不到再回退早期版本留下的 HKCU 记录；卸载则两处都清。`UninstallString` 指向安装目录内的常驻副本并带 `--action=uninstall`，点卸载会直接弹出卸载确认框。
 
 ### 命令行参数
 不带参数时打开图形界面（主界面按安装状态提供安装/升级/卸载）。
@@ -117,6 +117,8 @@ zip 放到项目根目录，双击 `test-upgrade.bat`（会自动请求管理员
 
 桌宠发起升级的约定：以管理员方式（`ShellExecute`，会弹一次 UAC）拉起
 `%ProgramFiles%\KfuPet\KfuPetUpdate.exe --action=update --wait-pid=<桌宠 PID>`，随后桌宠自行退出。
+常驻副本的位置取自注册表 `HKLM\Software\KfuPet` 的 `InstallPath`——记录已从用户域迁到机器级，
+KfuPet 侧须读同一处（见「卸载流程」）。
 **顺序不能反**：要先确认拉起成功再退出，否则用户取消 UAC 时会留下「桌宠没了、更新也没做」的空档。
 完整约定见 [docs/upgrade-integration.md](docs/upgrade-integration.md)。
 
@@ -145,7 +147,7 @@ zip 放到项目根目录，双击 `test-upgrade.bat`（会自动请求管理员
 - `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动/等待/强制终止、临时副本目录自删安排（`lock_*` / `notify_*` / `process_*` 三组）
 - `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、旋转点阵指示器（`spinner.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
 - `internal/dotnet/`：运行环境（.NET 桌面运行时）：共享框架目录探测与版本挑选（`Detect`）、静默安装（`InstallSilent`）、候选下载地址与手动下载引导地址
-- `internal/winreg/`：注册表读写：安装记录与标准卸载入口（`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
+- `internal/winreg/`：注册表读写：安装记录与标准卸载入口（写机器级 HKLM、读兼容 HKCU，固定 64 位视图；`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
 - `app.rc`：Windows 资源脚本（exe 图标 + 属性「详细信息」版本信息 + 应用程序清单）
 - `app.manifest`：应用程序清单（声明 `requireAdministrator`）
 - `app_windows_amd64.syso`：由 `app.rc` 编译出的 Windows 资源对象（已提交）
