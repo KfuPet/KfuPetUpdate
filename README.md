@@ -51,6 +51,10 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 ### 安装流程
 主界面点「安装」进入向导：**选择安装位置**（默认 `%ProgramFiles%\KfuPet`，可浏览自定义）→ **安装选项**（桌面/开始菜单快捷方式 + 安装方式）→ 安装。安装目录整体替换（先落暂存目录再改名），下载带 sha256 校验，快捷方式经 PowerShell 调 `WScript.Shell` 创建。
 
+安装包已不再自带 .NET 运行时，因此启动时会在查询版本的同时检测本机是否装有 KfuPet 所需的 **.NET 桌面运行时**（Microsoft Windows Desktop Runtime 8.0.x）。缺失时，主界面点「安装」会先弹窗询问是否一并安装（默认勾选，取消则放弃本次安装）。安装时运行环境排在 KfuPet 本体之前，用 `/install /quiet /norestart` **静默安装、不弹任何窗口**。
+
+运行环境安装包有两个下载地址（微软官方构建站优先，失败回退备用地址），两个都拿不到时跳过环境、继续装 KfuPet，并在安装结束后弹窗让用户选择手动下载：微软官网、蓝奏云（提取码 `h5vb`）或稍后自行安装。
+
 安装方式分两种，在「安装选项」页用单选项切换：
 - **在线安装**（默认）：从 GitHub Releases 直链下载安装包。
 - **离线安装**：使用本地已下载好的安装包（点「选择安装包…」选取 zip），安装过程跳过下载、直接从校验阶段开始，断网也能装。有发布信息时按 sha256 严格校验，拿不到发布信息时只校验是可打开的 zip 且含 `KfuPet.exe`；版本号取自发布信息，取不到时尝试从文件名解析，再不行记为「未知」。
@@ -98,13 +102,14 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 - `main.go`：界面层（启动闪屏、主界面、安装向导各页面）
 - `update.go`：版本查询逻辑（GitHub 源优先，自建服务器源为占位空壳，失败时回退），以及发布版产物（安装包）的解析与挑选
 - `install.go`：安装状态检测（读取注册表安装记录并校验安装目录内程序是否仍存在）
-- `installer.go`：安装流程（下载 → sha256 校验 → 解压 → 替换安装目录 → 创建快捷方式 → 写注册表）
+- `installer.go`：安装流程（下载 → sha256 校验 → 解压 → 替换安装目录 → 创建快捷方式 → 写注册表；运行环境排在 KfuPet 本体之前）
 - `uninstall.go`：卸载流程（删安装目录 → 删快捷方式 → 按选择删个人数据 → 删注册表）与标准卸载入口的内容组装
 - `cli.go`：命令行参数解析与静默卸载（`--action=update` 目前仅预留入口）
 - `selfcopy.go`：自身复制、临时副本接力与临时目录清理
 - `shortcut_windows.go`：快捷方式的创建与删除（经 PowerShell 调 `WScript.Shell`）
 - `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动与等待、临时副本目录自删安排（`lock_*` / `notify_*` / `process_*` 三组）
 - `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、旋转点阵指示器（`spinner.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
+- `internal/dotnet/`：运行环境（.NET 桌面运行时）：共享框架目录探测与版本挑选（`Detect`）、静默安装（`InstallSilent`）、候选下载地址与手动下载引导地址
 - `internal/winreg/`：注册表读写：安装记录与标准卸载入口（`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
 - `app.rc`：Windows 资源脚本（exe 图标 + 属性「详细信息」版本信息 + 应用程序清单）
 - `app.manifest`：应用程序清单（声明 `requireAdministrator`）

@@ -3,6 +3,7 @@
 package winapi
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,6 +23,21 @@ func StartDetached(exe, dir string, args []string) error {
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: CreateNoWindow}
 	return cmd.Start()
+}
+
+// RunHidden 以隐藏窗口方式运行进程并等它结束，返回其退出码。
+// 用于静默安装运行环境这类不能弹出窗口的子进程（安装程序返回非零码时不视为启动失败）。
+func RunHidden(exe string, args ...string) (int, error) {
+	cmd := exec.Command(exe, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: CreateNoWindow}
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode(), nil
+		}
+		return -1, err
+	}
+	return 0, nil
 }
 
 // WaitProcessExit 阻塞等待指定进程退出，最长 timeout。

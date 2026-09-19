@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"kfupet-installer/internal/dotnet"
 	"kfupet-installer/internal/winreg"
 )
 
@@ -27,27 +28,31 @@ const installTimeout = 30 * time.Minute
 type installStage string
 
 const (
-	stageDownloading installStage = "正在下载安装包"
-	stageVerifying   installStage = "正在校验安装包"
-	stageExtracting  installStage = "正在解压安装包"
-	stageApplying    installStage = "正在安装文件"
-	stageShortcuts   installStage = "正在创建快捷方式"
-	stageRegistering installStage = "正在写入安装信息"
+	stageEnvDownloading installStage = "正在下载运行环境"
+	stageEnvInstalling  installStage = "正在安装运行环境"
+	stageDownloading    installStage = "正在下载安装包"
+	stageVerifying      installStage = "正在校验安装包"
+	stageExtracting     installStage = "正在解压安装包"
+	stageApplying       installStage = "正在安装文件"
+	stageShortcuts      installStage = "正在创建快捷方式"
+	stageRegistering    installStage = "正在写入安装信息"
 )
 
-// installStages 是安装步骤的固定顺序。
+// installStages 是安装步骤的固定顺序：运行环境排在最前，装好 KfuPet 才能启动。
 // 其中 stageShortcuts 只在勾选了快捷方式时才真正执行，见 stagesFor。
 var installStages = []installStage{
+	stageEnvDownloading, stageEnvInstalling,
 	stageDownloading, stageVerifying, stageExtracting, stageApplying,
 	stageShortcuts, stageRegistering,
 }
 
 // installOptions 是安装向导第二页收集的选项。
 type installOptions struct {
-	Desktop   bool   // 创建桌面快捷方式
-	StartMenu bool   // 创建开始菜单快捷方式
-	Offline   bool   // 离线安装：使用本地已有的安装包，不下载
-	Package   string // 离线安装包路径（Offline 为真时有效）
+	Desktop    bool   // 创建桌面快捷方式
+	StartMenu  bool   // 创建开始菜单快捷方式
+	Offline    bool   // 离线安装：使用本地已有的安装包，不下载
+	Package    string // 离线安装包路径（Offline 为真时有效）
+	InstallEnv bool   // 一并安装运行环境（缺少 .NET 桌面运行时时提供）
 }
 
 // wantsShortcuts 表示安装后是否需要创建快捷方式。
@@ -64,6 +69,10 @@ func stagesFor(opts installOptions) []installStage {
 		}
 		// 离线安装直接用本地安装包，跳过下载阶段。
 		if s == stageDownloading && opts.Offline {
+			continue
+		}
+		// 不需要装运行环境时，跳过对应的两个阶段。
+		if (s == stageEnvDownloading || s == stageEnvInstalling) && !opts.InstallEnv {
 			continue
 		}
 		stages = append(stages, s)
@@ -215,67 +224,121 @@ func versionForInstall(rel *releaseInfo, pkgPath string) string {
 	return "未知"
 }
 
+// ensureDesktopRuntime 下载并静默安装运行环境；本机已装好时直接返回。
+// 下载地址全部失败时返回错误，由调用方决定跳过，不阻断主流程。
+func ensureDesktopRuntime(ctx context.Context, report progressFunc) error {
+	if dotnet.Detect().Present {
+		return nil
+	}
+
+	path, err := downloadEnvInstaller(ctx, report)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(path)
+
+	// 备用地址是第三方文件站，失败时可能落地一个 HTML 错误页；执行前先确认是可执行文件。
+	if !dotnet.LooksLikeExecutable(path) {
+		return fmt.Errorf("下载到的运行环境安装包不可用")
+	}
+
+	reportStage(report, stageEnvInstalling)
+	return dotnet.InstallSilent(path)
+}
+
+// downloadEnvInstaller 依次尝试各候选地址下载运行环境安装包，返回落地的临时文件路径。
+func downloadEnvInstaller(ctx context.Context, report progressFunc) (string, error) {
+	var fails []string
+	for _, u := range dotnet.DownloadURLs {
+		req := downloadRequest{url: u, suffix: ".exe", stage: stageEnvDownloading}
+		path, err := downloadWithRetry(ctx, req, report)
+		if err == nil {
+			return path, nil
+		}
+		fails = append(fails, err.Error())
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return "", fmt.Errorf("运行环境下载失败：%s", strings.Join(fails, "；"))
+}
+
+// installResult 是一次安装的产物。
+type installResult struct {
+	state      installState // 安装后的状态
+	envSkipped bool         // 运行环境未能自动装好（下载地址均失败），需引导用户手动安装
+}
+
 // installKfuPet 把发布版安装到 installDir（升级走同一套流程）：
-// 获取安装包（在线下载 / 离线取本地文件）→ 校验 → 解压 → 替换安装目录 →
-// 创建快捷方式 → 写入注册表。
+// 安装运行环境 → 获取安装包（在线下载 / 离线取本地文件）→ 校验 → 解压 →
+// 替换安装目录 → 创建快捷方式 → 写入注册表。
 // 过程中任何一步失败都不会留下半成品安装：新文件先落在暂存目录，
 // 全部就绪后才整体替换，替换失败会回滚旧目录。
-func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opts installOptions, report progressFunc) (installState, error) {
+func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opts installOptions, report progressFunc) (installResult, error) {
 	// 正在运行时安装目录内的文件被占用，无法替换，先让用户退出。
 	// （优雅关闭协议尚未实现，这里只做拦截。）
 	if isExecutableBusy(filepath.Join(installDir, executableName)) {
-		return installState{}, fmt.Errorf("KfuPet 正在运行，请先退出后再试")
+		return installResult{}, fmt.Errorf("KfuPet 正在运行，请先退出后再试")
 	}
 
 	// 自身就住在目标目录里时，整体替换会连自己一起搬走/覆盖，先拦下。
 	// 正常流程中调用方已交棒给临时副本，这里只是兜底。
 	if isSelfWithin(installDir) {
-		return installState{}, fmt.Errorf("更新程序正运行于安装目录内，请更换安装位置")
+		return installResult{}, fmt.Errorf("更新程序正运行于安装目录内，请更换安装位置")
+	}
+
+	// 运行环境排在最前：装好 KfuPet 才跑得起来。
+	// 候选地址都拿不到时只记录待办、不阻断主流程，安装结束后由界面引导用户手动安装。
+	envSkipped := false
+	if opts.InstallEnv {
+		if err := ensureDesktopRuntime(ctx, report); err != nil {
+			envSkipped = true
+		}
 	}
 
 	// 取到本次要用的安装包：在线下载，或离线直接使用用户选定的本地文件。
 	src, err := resolveInstallerSource(ctx, rel, opts, report)
 	if err != nil {
-		return installState{}, err
+		return installResult{}, err
 	}
 	defer src.cleanup()
 
 	if err := verifyArchive(src.path, src.art, report); err != nil {
-		return installState{}, err
+		return installResult{}, err
 	}
 
 	// 暂存目录与安装目录同级，保证最后的 rename 在同一卷内，可以整体替换。
 	stagingDir := installDir + ".new"
 	if err := os.RemoveAll(stagingDir); err != nil {
-		return installState{}, err
+		return installResult{}, err
 	}
 	defer os.RemoveAll(stagingDir)
 
 	reportStage(report, stageExtracting)
 	if err := extractZip(src.path, stagingDir); err != nil {
-		return installState{}, err
+		return installResult{}, err
 	}
 
 	// 包结构校验：剥掉顶层目录后，程序应直接位于暂存目录根下。
 	if info, err := os.Stat(filepath.Join(stagingDir, executableName)); err != nil || info.IsDir() {
-		return installState{}, fmt.Errorf("安装包结构异常：根目录下未找到 %s", executableName)
+		return installResult{}, fmt.Errorf("安装包结构异常：根目录下未找到 %s", executableName)
 	}
 
 	reportStage(report, stageApplying)
 	if err := applyStagedDir(stagingDir, installDir); err != nil {
-		return installState{}, err
+		return installResult{}, err
 	}
 
 	// 把自身复制进安装目录常驻：卸载入口与 KfuPet 的「检查更新」都依赖这个
 	// 固定位置，用户删掉当初下载的 updater 也不影响后续卸载与升级。
 	if err := copySelf(filepath.Join(installDir, updaterName)); err != nil {
-		return installState{}, fmt.Errorf("放置更新程序失败：%w", err)
+		return installResult{}, fmt.Errorf("放置更新程序失败：%w", err)
 	}
 
 	if opts.wantsShortcuts() {
 		reportStage(report, stageShortcuts)
 		if err := createShortcuts(installDir, opts); err != nil {
-			return installState{}, err
+			return installResult{}, err
 		}
 	}
 
@@ -285,13 +348,16 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	// 先写标准卸载入口，再写自己的安装记录：后者是"已安装"的唯一依据，
 	// 放在最后写，前面的失败就不会留下"记录已存在但安装未完成"的状态。
 	if err := winreg.WriteUninstallEntry(uninstallEntryFor(installDir, rec.DisplayVersion)); err != nil {
-		return installState{}, fmt.Errorf("写入卸载入口失败：%w", err)
+		return installResult{}, fmt.Errorf("写入卸载入口失败：%w", err)
 	}
 	if err := winreg.WriteInstallRecord(rec); err != nil {
-		return installState{}, fmt.Errorf("写入安装信息失败：%w", err)
+		return installResult{}, fmt.Errorf("写入安装信息失败：%w", err)
 	}
 
-	return installState{Installed: true, Path: rec.InstallPath, Version: rec.DisplayVersion}, nil
+	return installResult{
+		state:      installState{Installed: true, Path: rec.InstallPath, Version: rec.DisplayVersion},
+		envSkipped: envSkipped,
+	}, nil
 }
 
 // launchKfuPet 启动安装目录内的 KfuPet。
@@ -370,13 +436,31 @@ const (
 	downloadRetryDelay = 2 * time.Second
 )
 
+// downloadRequest 描述一次下载：地址、完整性预期、临时文件后缀与所属阶段。
+type downloadRequest struct {
+	url      string       // 下载地址
+	expected int64        // 预期字节数；>0 时校验下载完整性，0 表示未知
+	suffix   string       // 临时文件后缀（如 ".zip" / ".exe"）
+	stage    installStage // 汇报进度时使用的阶段
+}
+
 // downloadArtifact 把安装包下载到临时文件，返回其路径。
-// 连接被重置、握手超时这类瞬时失败很常见，因此最多尝试 downloadAttempts 次。
 func downloadArtifact(ctx context.Context, art *artifact, report progressFunc) (string, error) {
+	return downloadWithRetry(ctx, downloadRequest{
+		url:      art.DownloadURL,
+		expected: art.Size,
+		suffix:   ".zip",
+		stage:    stageDownloading,
+	}, report)
+}
+
+// downloadWithRetry 按重试策略下载一次请求，返回落地的临时文件路径。
+// 连接被重置、握手超时这类瞬时失败很常见，因此最多尝试 downloadAttempts 次。
+func downloadWithRetry(ctx context.Context, req downloadRequest, report progressFunc) (string, error) {
 	var err error
 	for attempt := 1; attempt <= downloadAttempts; attempt++ {
 		var path string
-		if path, err = downloadFromURL(ctx, art.DownloadURL, art, report); err == nil {
+		if path, err = downloadFromURL(ctx, req, report); err == nil {
 			return path, nil
 		}
 		// ctx 已结束（取消或超时）时再试没有意义，直接返回最后一次的失败原因。
@@ -391,19 +475,19 @@ func downloadArtifact(ctx context.Context, art *artifact, report progressFunc) (
 }
 
 // downloadFromURL 从指定地址下载一次，返回落地的临时文件路径。
-func downloadFromURL(ctx context.Context, url string, art *artifact, report progressFunc) (string, error) {
+func downloadFromURL(ctx context.Context, req downloadRequest, report progressFunc) (string, error) {
 	if report != nil {
 		// 每次尝试都从 0 重新汇报，重试时进度条会重走一遍。
-		report(installProgress{Stage: stageDownloading, Total: art.Size})
+		report(installProgress{Stage: req.stage, Total: req.expected})
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.url, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "KfuPetUpdate-Updater")
+	httpReq.Header.Set("User-Agent", "KfuPetUpdate-Updater")
 
-	resp, err := (&http.Client{Timeout: installTimeout}).Do(req)
+	resp, err := (&http.Client{Timeout: installTimeout}).Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("下载安装包失败：%w", err)
 	}
@@ -415,16 +499,16 @@ func downloadFromURL(ctx context.Context, url string, art *artifact, report prog
 
 	total := resp.ContentLength
 	if total <= 0 {
-		total = art.Size
+		total = req.expected
 	}
 
-	f, err := os.CreateTemp("", "KfuPetUpdate-*.zip")
+	f, err := os.CreateTemp("", "KfuPetUpdate-*"+req.suffix)
 	if err != nil {
 		return "", err
 	}
 	path := f.Name()
 
-	if err := copyWithProgress(f, resp.Body, total, art.Size, report); err != nil {
+	if err := copyWithProgress(f, resp.Body, total, req, report); err != nil {
 		f.Close()
 		os.Remove(path)
 		return "", err
@@ -456,8 +540,8 @@ const (
 )
 
 // copyWithProgress 把 src 完整写入 dst，并按字节数、速度回报进度。
-// expected 大于 0 时校验最终字节数，避免网络中断被当成下载完成。
-func copyWithProgress(dst io.Writer, src io.Reader, total, expected int64, report progressFunc) error {
+// req.expected 大于 0 时校验最终字节数，避免网络中断被当成下载完成。
+func copyWithProgress(dst io.Writer, src io.Reader, total int64, req downloadRequest, report progressFunc) error {
 	buf := make([]byte, 64*1024)
 	var written, lastReported int64
 	var speed float64
@@ -484,7 +568,7 @@ func copyWithProgress(dst io.Writer, src io.Reader, total, expected int64, repor
 				}
 				lastReported, lastReport = written, now
 				report(installProgress{
-					Stage: stageDownloading, Done: written, Total: total, Speed: speed,
+					Stage: req.stage, Done: written, Total: total, Speed: speed,
 				})
 			}
 		}
@@ -498,11 +582,11 @@ func copyWithProgress(dst io.Writer, src io.Reader, total, expected int64, repor
 
 	if report != nil {
 		report(installProgress{
-			Stage: stageDownloading, Done: written, Total: total, Speed: speed,
+			Stage: req.stage, Done: written, Total: total, Speed: speed,
 		})
 	}
-	if expected > 0 && written != expected {
-		return fmt.Errorf("下载不完整：预期 %d 字节，实际 %d 字节", expected, written)
+	if req.expected > 0 && written != req.expected {
+		return fmt.Errorf("下载不完整：预期 %d 字节，实际 %d 字节", req.expected, written)
 	}
 	return nil
 }

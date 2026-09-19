@@ -22,6 +22,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"kfupet-installer/internal/dotnet"
 	"kfupet-installer/internal/uifx"
 	"kfupet-installer/internal/winapi"
 )
@@ -182,6 +183,7 @@ type appState struct {
 	rel      *releaseInfo // 远端发布信息；查询失败时为 nil
 	checkErr error        // 版本查询失败原因
 	st       installState // 本机安装状态
+	env      dotnet.State // 本机运行环境（.NET 桌面运行时）检测结果
 
 	phase      installPhase
 	targetDir  string          // 本次安装的目标目录
@@ -333,6 +335,10 @@ func buildOptionsPage(s appState, h flowHandlers) fyne.CanvasObject {
 		container.NewCenter(startMenuCheck),
 		container.NewCenter(modeRadio),
 	}
+	// 运行环境缺失时会在进向导前询问是否一并安装，这里把结果如实列出。
+	if s.opts.InstallEnv {
+		items = append(items, container.NewCenter(smallText("将一并安装运行环境："+dotnet.DisplayName)))
+	}
 	if s.opts.Offline {
 		items = append(items,
 			container.NewCenter(smallText("安装包："+packageLabel(s.opts.Package))),
@@ -421,7 +427,9 @@ func (v *installingView) update(p installProgress) {
 	v.stageBox.Refresh() // 阶段文案长度变化后重新居中
 	v.steps.SetCurrent(stageIndex(v.stages, p.Stage))
 
-	if p.Stage == stageDownloading && p.Total > 0 {
+	// 运行环境与安装包的下载都带字节进度，用确定进度条展示；
+	// 其余阶段无法量化，用不确定进度条表示"正在进行"。
+	if (p.Stage == stageDownloading || p.Stage == stageEnvDownloading) && p.Total > 0 {
 		v.indet.Stop()
 		v.indet.Hide()
 		v.deter.Show()
@@ -562,6 +570,49 @@ func confirmUninstall(w fyne.Window, onConfirmed func(keepUserData bool)) {
 				onConfirmed(keepData.Checked)
 			}
 		}, w)
+}
+
+// confirmInstallEnv 在缺少运行环境时询问是否一并安装，默认勾选。
+// 「继续」带着勾选结果进入安装向导，「取消」则放弃本次安装、留在主界面。
+func confirmInstallEnv(w fyne.Window, onChoice func(withEnv bool)) {
+	note := widget.NewLabel("未检测到 KfuPet 所需的运行环境（" + dotnet.DisplayName + "），缺少它 KfuPet 无法启动。")
+	note.Wrapping = fyne.TextWrapWord
+
+	withEnv := widget.NewCheck("一并安装运行环境（推荐）", nil)
+	withEnv.SetChecked(true)
+
+	dialog.ShowCustomConfirm("缺少运行环境", "继续", "取消",
+		container.NewVBox(note, withEnv),
+		func(confirmed bool) {
+			if confirmed {
+				onChoice(withEnv.Checked)
+			}
+		}, w)
+}
+
+// showEnvManualDownload 在运行环境自动安装失败（候选下载地址均不可用）时，
+// 引导用户自行下载安装：官网与蓝奏云二选一，或稍后自行处理。
+func showEnvManualDownload(w fyne.Window) {
+	note := widget.NewLabel("运行环境未能自动下载安装，请手动安装后再启动 KfuPet。")
+	note.Wrapping = fyne.TextWrapWord
+	code := smallText("蓝奏云提取码：" + dotnet.LanzouCode)
+
+	var d *dialog.CustomDialog
+	// 三个选项都会关掉本弹窗：前两个再拉起浏览器。
+	open := func(raw string) {
+		d.Hide()
+		if u, err := url.Parse(raw); err == nil {
+			_ = fyne.CurrentApp().OpenURL(u)
+		}
+	}
+	buttons := container.NewHBox(
+		widget.NewButton("微软官网", func() { open(dotnet.OfficialURL) }),
+		widget.NewButton("蓝奏云", func() { open(dotnet.LanzouURL) }),
+		widget.NewButton("稍后自行安装", func() { d.Hide() }),
+	)
+	d = dialog.NewCustomWithoutButtons("需要手动安装运行环境",
+		container.NewVBox(note, code, container.NewCenter(buttons)), w)
+	d.Show()
 }
 
 // formatBytes 把字节数格式化为便于阅读的形式，如 "67.4 MB"。
@@ -796,10 +847,19 @@ func runGUI(cmd command) {
 			retryCheck: func() { startVersionCheck() },
 			install: func() {
 				// 进向导第一步：预填默认目录，快捷方式默认都勾选。
-				state.targetDir = defaultInstallDir()
-				state.opts = installOptions{Desktop: true, StartMenu: true}
-				state.phase = phaseChooseDir
-				render()
+				begin := func(withEnv bool) {
+					state.targetDir = defaultInstallDir()
+					state.opts = installOptions{Desktop: true, StartMenu: true, InstallEnv: withEnv}
+					state.phase = phaseChooseDir
+					render()
+				}
+				// 缺少运行环境（.NET 桌面运行时）时先询问是否一并安装，默认勾选；
+				// 用户取消则放弃本次安装，留在主界面。
+				if state.env.Present {
+					begin(false)
+					return
+				}
+				confirmInstallEnv(w, begin)
 			},
 			upgrade: func() {
 				// TODO: 升级逻辑（沿用注册表记录的安装目录，不再询问）
@@ -834,8 +894,9 @@ func runGUI(cmd command) {
 			ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 			defer cancel()
 
-			// 本地注册表检查很快，与远端查询一并在后台完成，避免阻塞界面。
+			// 本地注册表与运行环境检查都很快，与远端查询一并在后台完成，避免阻塞界面。
 			st := detectInstallState()
+			env := dotnet.Detect()
 			rel, err := checker.check(ctx)
 
 			// 查询提前完成时，补足剩余时长再切换，避免闪屏一闪而过
@@ -845,6 +906,7 @@ func runGUI(cmd command) {
 
 			fyne.Do(func() {
 				state.st = st
+				state.env = env
 				state.rel = rel
 				state.checkErr = err
 				// 闪屏 Logo 先渐隐，落幕后切主界面，左上角 Logo 接着渐显。
@@ -873,11 +935,20 @@ func runGUI(cmd command) {
 		}
 		installDir, opts := state.targetDir, state.opts
 
+		// 运行环境可能在本次会话里已被装好（例如用户刚手动装过），不必重复下载。
+		if opts.InstallEnv && dotnet.Detect().Present {
+			opts.InstallEnv = false
+			state.opts.InstallEnv = false
+		}
+
 		state.phase = phaseRunning
 		state.installErr = nil
-		// 离线安装跳过下载，进度从校验阶段起步。
+		// 进度起点：要先装运行环境就从它开始；离线安装跳过下载，从校验阶段起步。
 		firstStage := stageDownloading
-		if opts.Offline {
+		switch {
+		case opts.InstallEnv:
+			firstStage = stageEnvDownloading
+		case opts.Offline:
 			firstStage = stageVerifying
 		}
 		state.progress = installProgress{Stage: firstStage}
@@ -888,7 +959,7 @@ func runGUI(cmd command) {
 			ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
 			defer cancel()
 
-			st, err := installKfuPet(ctx, rel, installDir, opts, func(p installProgress) {
+			res, err := installKfuPet(ctx, rel, installDir, opts, func(p installProgress) {
 				fyne.Do(func() {
 					state.progress = p
 					// 原地更新，不整页重建：步骤画勾、流光等动画才能连续播放
@@ -904,10 +975,14 @@ func runGUI(cmd command) {
 					state.installErr = err
 				} else {
 					state.phase = phaseDone
-					state.st = st
+					state.st = res.state
 				}
 				installing = nil
 				render()
+				// 运行环境没能自动装好（下载地址均不可用）时，安装结束引导用户手动下载。
+				if err == nil && res.envSkipped {
+					showEnvManualDownload(w)
+				}
 			})
 		}()
 	}
