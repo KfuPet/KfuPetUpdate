@@ -22,6 +22,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"kfupet-installer/internal/uifx"
 	"kfupet-installer/internal/winapi"
 )
 
@@ -216,7 +217,8 @@ type flowHandlers struct {
 // buildMainUI 组装主界面。
 // 可用操作由注册表安装状态决定：未安装只提供「安装」，
 // 已安装提供「升级」「卸载」，「安装」不再出现。
-func buildMainUI(s appState, h uiHandlers) fyne.CanvasObject {
+// 返回内容连同左上角 Logo 的遮罩，供闪屏 Logo 渐隐后衔接渐显。
+func buildMainUI(s appState, h uiHandlers) (fyne.CanvasObject, *uifx.Cover) {
 	var actions []fyne.CanvasObject
 	if s.st.Installed {
 		actions = append(actions,
@@ -227,10 +229,11 @@ func buildMainUI(s appState, h uiHandlers) fyne.CanvasObject {
 		actions = append(actions, widget.NewButton("安装", h.install))
 	}
 
-	// 上方图标：从资源嵌入的 KfuPet Logo
+	// 上方图标：从资源嵌入的 KfuPet Logo；外包一层遮罩，用于进入主界面时渐显。
 	logoImage := canvas.NewImageFromResource(fyne.NewStaticResource("Startlogo.png", startLogoPNG))
 	logoImage.FillMode = canvas.ImageFillContain
-	logoArea := container.NewCenter(container.NewGridWrap(fyne.NewSize(120, 120), logoImage))
+	logoArea, logoCover := uifx.NewCover(logoImage)
+	logoBox := container.NewCenter(container.NewGridWrap(fyne.NewSize(120, 120), logoArea))
 
 	// 左侧：上方图标 + 下方按钮（数量随安装状态变化）
 	buttons := container.New(&vfillLayout{
@@ -238,9 +241,9 @@ func buildMainUI(s appState, h uiHandlers) fyne.CanvasObject {
 		itemHeight: 48,
 		spacing:    20,
 	}, actions...)
-	left := container.NewBorder(logoArea, nil, nil, nil, buttons)
+	left := container.NewBorder(logoBox, nil, nil, nil, buttons)
 
-	return container.NewBorder(nil, bottomBar(), left, nil, buildRightPanel(s, h))
+	return container.NewBorder(nil, bottomBar(), left, nil, buildRightPanel(s, h)), logoCover
 }
 
 // buildRightPanel 组装主界面右侧信息面板。
@@ -253,10 +256,9 @@ func buildRightPanel(s appState, h uiHandlers) fyne.CanvasObject {
 
 // buildInstallView 组装安装向导的全屏页面。
 // 安装不再是主界面的一部分，而是独立成页；结束后由用户返回主界面。
+// 进行中的页面（phaseRunning）不经过这里：它由 render 直接维护，以便原地更新。
 func buildInstallView(s appState, h flowHandlers) fyne.CanvasObject {
 	switch s.phase {
-	case phaseChooseDir:
-		return buildChooseDirPage(s, h)
 	case phaseOptions:
 		return buildOptionsPage(s, h)
 	case phaseDone:
@@ -264,7 +266,7 @@ func buildInstallView(s appState, h flowHandlers) fyne.CanvasObject {
 	case phaseFailed:
 		return buildInstallFailedView(s, h)
 	default:
-		return buildInstallingView(s)
+		return buildChooseDirPage(s, h)
 	}
 }
 
@@ -362,63 +364,88 @@ func packageLabel(path string) string {
 	return path
 }
 
-// buildInstallingView 展示安装进行中的步骤清单与下载进度。
-func buildInstallingView(s appState) fyne.CanvasObject {
-	caption := smallText("KfuPet 安装中")
-	caption.TextStyle = fyne.TextStyle{}
-
-	stageText := canvas.NewText(string(s.progress.Stage), theme.Color(theme.ColorNameForeground))
-	stageText.TextSize = 20
-	stageText.TextStyle = fyne.TextStyle{Bold: true}
-
-	// 下载阶段总量已知：用确定进度条并展示速度与字节数；
-	// 其余阶段无法量化，用不确定进度条表示"正在进行"。
-	// 进度条自身会渲染百分比文案，宽度需由外部约束。
-	var bar fyne.CanvasObject
-	detail := " "
-	if s.progress.Stage == stageDownloading && s.progress.Total > 0 {
-		progressBar := widget.NewProgressBar()
-		progressBar.Max = float64(s.progress.Total)
-		progressBar.SetValue(float64(s.progress.Done))
-		bar = progressBar
-		detail = fmt.Sprintf("%s / %s　%s/s",
-			formatBytes(s.progress.Done),
-			formatBytes(s.progress.Total),
-			formatBytes(int64(s.progress.Speed)))
-	} else {
-		progressBar := widget.NewProgressBarInfinite()
-		progressBar.Start()
-		bar = progressBar
-	}
-
-	return container.NewCenter(container.NewVBox(
-		container.NewCenter(caption),
-		container.NewCenter(stageText),
-		container.NewGridWrap(fyne.NewSize(360, 26), bar),
-		container.NewCenter(smallText(detail)),
-		buildStepList(stagesFor(s.opts), s.progress.Stage),
-		container.NewCenter(smallText("安装位置："+s.targetDir)),
-	))
+// installingView 是安装进行中的页面：创建一次后由进度回调原地更新，
+// 步骤清单的画勾/脉冲、进度条流光等动画才不会被整页重建打断。
+type installingView struct {
+	root      fyne.CanvasObject
+	stage     *canvas.Text
+	stageBox  *fyne.Container // 文案变长变短后靠 Refresh 重新居中
+	detail    *canvas.Text
+	detailBox *fyne.Container
+	steps     *uifx.StepList
+	deter     *uifx.ShineBar              // 下载阶段：确定进度条 + 流光
+	indet     *widget.ProgressBarInfinite // 其余阶段：不确定进度条
+	stages    []installStage
 }
 
-// buildStepList 组装安装步骤清单：已完成用常规色、当前步骤高亮、未开始弱化。
-func buildStepList(stages []installStage, current installStage) fyne.CanvasObject {
-	idx := stageIndex(stages, current)
-	rows := make([]fyne.CanvasObject, 0, len(stages))
-	for i, stage := range stages {
-		label := widget.NewLabel(fmt.Sprintf("%d. %s", i+1, stage))
-		switch {
-		case i < idx:
-			label.Importance = widget.MediumImportance
-		case i == idx:
-			label.Importance = widget.HighImportance
-			label.TextStyle = fyne.TextStyle{Bold: true}
-		default:
-			label.Importance = widget.LowImportance
-		}
-		rows = append(rows, container.NewCenter(label))
+// newInstallingView 组装安装中页面，并按当前进度初始化显示。
+func newInstallingView(s appState) *installingView {
+	v := &installingView{stages: stagesFor(s.opts)}
+
+	caption := smallText("KfuPet 安装中")
+
+	v.stage = canvas.NewText(" ", theme.Color(theme.ColorNameForeground))
+	v.stage.TextSize = 20
+	v.stage.TextStyle = fyne.TextStyle{Bold: true}
+
+	// 下载阶段总量已知：用确定进度条并展示速度与字节数；
+	// 其余阶段无法量化，用不确定进度条表示"正在进行"。两条进度条叠放，按需切换。
+	v.deter = uifx.NewShineBar()
+	v.indet = widget.NewProgressBarInfinite()
+	bars := container.NewGridWrap(fyne.NewSize(360, 26), container.NewStack(v.deter, v.indet))
+
+	v.detail = canvas.NewText(" ", color.Gray{Y: 0x99})
+	v.detail.TextSize = theme.CaptionTextSize()
+	v.detail.Alignment = fyne.TextAlignCenter
+
+	v.steps = uifx.NewStepList(stageNames(v.stages))
+
+	v.stageBox = container.NewCenter(v.stage)
+	v.detailBox = container.NewCenter(v.detail)
+	v.root = container.NewCenter(container.NewVBox(
+		container.NewCenter(caption),
+		v.stageBox,
+		bars,
+		v.detailBox,
+		container.NewCenter(v.steps),
+		container.NewCenter(smallText("安装位置："+s.targetDir)),
+	))
+	v.update(s.progress)
+	return v
+}
+
+// update 按一次进度汇报原地刷新页面。
+func (v *installingView) update(p installProgress) {
+	v.stage.Text = string(p.Stage)
+	v.stage.Refresh()
+	v.stageBox.Refresh() // 阶段文案长度变化后重新居中
+	v.steps.SetCurrent(stageIndex(v.stages, p.Stage))
+
+	if p.Stage == stageDownloading && p.Total > 0 {
+		v.indet.Stop()
+		v.indet.Hide()
+		v.deter.Show()
+		v.deter.SetMax(float64(p.Total))
+		v.deter.SetValue(float64(p.Done))
+		v.detail.Text = fmt.Sprintf("%s / %s　%s/s",
+			formatBytes(p.Done), formatBytes(p.Total), formatBytes(int64(p.Speed)))
+	} else {
+		v.deter.Hide()
+		v.indet.Show()
+		v.indet.Start()
+		v.detail.Text = " "
 	}
-	return container.NewVBox(rows...)
+	v.detail.Refresh()
+	v.detailBox.Refresh()
+}
+
+// stageNames 把阶段枚举转成步骤清单的展示文案（带序号）。
+func stageNames(stages []installStage) []string {
+	names := make([]string, len(stages))
+	for i, s := range stages {
+		names[i] = fmt.Sprintf("%d. %s", i+1, s)
+	}
+	return names
 }
 
 // buildInstallDoneView 展示安装结果，并询问是否立即启动。
@@ -436,8 +463,9 @@ func buildInstallDoneView(s appState, h flowHandlers) fyne.CanvasObject {
 	question := widget.NewLabel("是否立即启动 KfuPet？")
 	question.Alignment = fyne.TextAlignCenter
 
-	return container.NewVBox(
+	content := container.NewVBox(
 		layout.NewSpacer(),
+		container.NewCenter(container.NewGridWrap(fyne.NewSize(72, 72), uifx.NewResultMark(true))),
 		container.NewCenter(title),
 		container.NewCenter(smallText(version)),
 		container.NewCenter(smallText("安装位置："+s.targetDir)),
@@ -448,6 +476,8 @@ func buildInstallDoneView(s appState, h flowHandlers) fyne.CanvasObject {
 		)),
 		layout.NewSpacer(),
 	)
+	// 彩带层盖在内容之上，安装成功时炸开一次庆祝。
+	return container.NewStack(content, uifx.NewConfetti())
 }
 
 // buildInstallFailedView 展示安装失败原因与重试、返回入口。
@@ -464,6 +494,7 @@ func buildInstallFailedView(s appState, h flowHandlers) fyne.CanvasObject {
 
 	return container.NewVBox(
 		layout.NewSpacer(),
+		container.NewCenter(container.NewGridWrap(fyne.NewSize(72, 72), uifx.NewResultMark(false))),
 		title,
 		detail,
 		container.NewCenter(smallText("安装位置："+s.targetDir)),
@@ -549,19 +580,32 @@ func formatBytes(n int64) string {
 
 const minSplashDuration = 2 * time.Second
 
-// checkingView 组装查询中的全屏闪屏查询当前版本信息。
-func checkingView() fyne.CanvasObject {
-	activity := widget.NewActivity()
-	activity.Start()
+// 闪屏收尾的 Logo 衔接：闪屏 Logo 先渐隐，切到主界面后左上角 Logo 再渐显。
+const (
+	logoFadeOutDuration = 260 * time.Millisecond
+	logoFadeInDuration  = 450 * time.Millisecond
+)
 
-	label := widget.NewLabelWithStyle("正在查询当前版本信息…", fyne.TextAlignCenter, fyne.TextStyle{})
+// checkingView 组装查询中的全屏闪屏：Logo + 旋转指示器 + 跳动省略号。
+// 返回内容连同 Logo 的遮罩，供查询结束后播放 Logo 渐隐。
+func checkingView() (fyne.CanvasObject, *uifx.Cover) {
+	logoImage := canvas.NewImageFromResource(fyne.NewStaticResource("Startlogo.png", startLogoPNG))
+	logoImage.FillMode = canvas.ImageFillContain
+	logoArea, logoCover := uifx.NewCover(logoImage)
+	logoBox := container.NewCenter(container.NewGridWrap(fyne.NewSize(96, 96), logoArea))
+
+	spinner := uifx.NewSpinner()
+
+	label := widget.NewLabelWithStyle("正在查询当前版本信息", fyne.TextAlignCenter, fyne.TextStyle{})
+	dots := uifx.NewDots()
 	appName := smallText("KfuPetInstall")
 
 	return container.NewCenter(container.NewVBox(
-		container.NewCenter(container.NewGridWrap(fyne.NewSize(48, 48), activity)),
-		container.NewCenter(label),
+		logoBox,
+		container.NewCenter(container.NewGridWrap(fyne.NewSize(40, 40), spinner)),
+		container.NewCenter(container.NewHBox(label, dots)),
 		container.NewCenter(appName),
-	))
+	)), logoCover
 }
 
 // buildFailedPanel 组装右侧的失败面板，用于查询失败与安装失败两种情形。
@@ -665,12 +709,33 @@ func runGUI(cmd command) {
 	var startVersionCheck func()
 	var startInstall func()
 	var startUninstall func(keepUserData bool)
-	uninstallPrompted := false // 标准卸载入口只自动弹一次确认框，避免重试查询时重复弹出
+	var installing *installingView // 安装中页面：原地更新，不随 render 重建
+	uninstallPrompted := false     // 标准卸载入口只自动弹一次确认框，避免重试查询时重复弹出
+
+	// 闪屏 Logo 渐隐结束后，主界面左上角 Logo 接着渐显；为真时下一次渲染走这条衔接。
+	logoFadePending := false
+
+	// 页面切换时整页淡入；同一阶段内的重建（如勾选选项）不重复播放。
+	lastPhase := installPhase(-1)
+	setContent := func(c fyne.CanvasObject) {
+		if state.phase != lastPhase {
+			c = uifx.FadeIn(c, 280*time.Millisecond)
+			lastPhase = state.phase
+		}
+		w.SetContent(c)
+	}
 
 	render = func() {
 		// 安装流程期间整屏切换到安装向导页，结束后再回到主界面。
 		if state.phase != phaseIdle {
-			w.SetContent(buildInstallView(state, flowHandlers{
+			if state.phase == phaseRunning {
+				if installing == nil {
+					installing = newInstallingView(state)
+				}
+				setContent(installing.root)
+				return
+			}
+			setContent(buildInstallView(state, flowHandlers{
 				browse: func() {
 					pickInstallDir(w, state.targetDir, func(dir string) {
 						state.targetDir = dir
@@ -727,7 +792,7 @@ func runGUI(cmd command) {
 			return
 		}
 
-		w.SetContent(buildMainUI(state, uiHandlers{
+		main, logoCover := buildMainUI(state, uiHandlers{
 			retryCheck: func() { startVersionCheck() },
 			install: func() {
 				// 进向导第一步：预填默认目录，快捷方式默认都勾选。
@@ -740,7 +805,18 @@ func runGUI(cmd command) {
 				// TODO: 升级逻辑（沿用注册表记录的安装目录，不再询问）
 			},
 			uninstall: func() { confirmUninstall(w, startUninstall) },
-		}))
+		})
+		if logoFadePending {
+			// 接在闪屏 Logo 渐隐之后：这里先遮住 Logo，切页后再让它渐显。
+			// 这次切换不再整页淡入，观感由 Logo 的渐隐—渐显主导。
+			logoFadePending = false
+			logoCover.Conceal()
+			lastPhase = state.phase
+			setContent(main)
+			logoCover.FadeIn(logoFadeInDuration)
+			return
+		}
+		setContent(main)
 	}
 
 	// 打开后：先显示转圈圈闪屏查询当前版本信息，
@@ -749,7 +825,9 @@ func runGUI(cmd command) {
 	startVersionCheck = func() {
 		state.phase = phaseIdle
 		state.checkErr = nil
-		w.SetContent(checkingView())
+		splash, splashLogo := checkingView()
+		w.SetContent(uifx.FadeIn(splash, 280*time.Millisecond))
+		lastPhase = -1 // 闪屏之后的首次渲染也要淡入
 
 		shownAt := time.Now() // 记录闪屏开始时刻，用于保证最短展示时长
 		go func() {
@@ -769,12 +847,16 @@ func runGUI(cmd command) {
 				state.st = st
 				state.rel = rel
 				state.checkErr = err
-				render()
-				// 由标准卸载入口拉起时，直接进卸载确认，省得用户在主界面再点一次。
-				if cmd.Action == actionUninstall && state.st.Installed && !uninstallPrompted {
-					uninstallPrompted = true
-					confirmUninstall(w, startUninstall)
-				}
+				// 闪屏 Logo 先渐隐，落幕后切主界面，左上角 Logo 接着渐显。
+				splashLogo.FadeOut(logoFadeOutDuration, func() {
+					logoFadePending = true
+					render()
+					// 由标准卸载入口拉起时，直接进卸载确认，省得用户在主界面再点一次。
+					if cmd.Action == actionUninstall && state.st.Installed && !uninstallPrompted {
+						uninstallPrompted = true
+						confirmUninstall(w, startUninstall)
+					}
+				})
 			})
 		}()
 	}
@@ -799,6 +881,7 @@ func runGUI(cmd command) {
 			firstStage = stageVerifying
 		}
 		state.progress = installProgress{Stage: firstStage}
+		installing = nil // 强制重建安装中页面（步骤数随选项变化）
 		render()
 
 		go func() {
@@ -808,7 +891,10 @@ func runGUI(cmd command) {
 			st, err := installKfuPet(ctx, rel, installDir, opts, func(p installProgress) {
 				fyne.Do(func() {
 					state.progress = p
-					render()
+					// 原地更新，不整页重建：步骤画勾、流光等动画才能连续播放
+					if installing != nil {
+						installing.update(p)
+					}
 				})
 			})
 
@@ -820,6 +906,7 @@ func runGUI(cmd command) {
 					state.phase = phaseDone
 					state.st = st
 				}
+				installing = nil
 				render()
 			})
 		}()
@@ -851,12 +938,12 @@ func runGUI(cmd command) {
 		}
 
 		// 卸载期间用模态框挡住主界面，避免重复触发。
-		activity := widget.NewActivity()
-		activity.Start()
+		spinner := uifx.NewSpinner()
+		busyLabel := widget.NewLabel("正在卸载 KfuPet")
 		modal := dialog.NewCustomWithoutButtons("正在卸载",
 			container.NewCenter(container.NewVBox(
-				container.NewCenter(container.NewGridWrap(fyne.NewSize(48, 48), activity)),
-				container.NewCenter(widget.NewLabel("正在卸载 KfuPet…")),
+				container.NewCenter(container.NewGridWrap(fyne.NewSize(48, 48), spinner)),
+				container.NewCenter(container.NewHBox(busyLabel, uifx.NewDots())),
 			)), w)
 		modal.Show()
 

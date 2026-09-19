@@ -104,6 +104,7 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 - `selfcopy.go`：自身复制、临时副本接力与临时目录清理
 - `shortcut_windows.go`：快捷方式的创建与删除（经 PowerShell 调 `WScript.Shell`）
 - `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动与等待、临时副本目录自删安排（`lock_*` / `notify_*` / `process_*` 三组）
+- `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、旋转点阵指示器（`spinner.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
 - `internal/winreg/`：注册表读写：安装记录与标准卸载入口（`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
 - `app.rc`：Windows 资源脚本（exe 图标 + 属性「详细信息」版本信息 + 应用程序清单）
 - `app.manifest`：应用程序清单（声明 `requireAdministrator`）
