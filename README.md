@@ -102,11 +102,11 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe .
 - `uninstall.go`：卸载流程（删安装目录 → 删快捷方式 → 按选择删个人数据 → 删注册表）与标准卸载入口的内容组装
 - `cli.go`：命令行参数解析与静默卸载（`--action=update` 目前仅预留入口）
 - `selfcopy.go`：自身复制、临时副本接力与临时目录清理
-- `shortcut_windows.go` / `shortcut_other.go`：快捷方式的创建与删除（Windows 实现与非 Windows 空实现）
-- `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动与等待、临时副本目录自删安排（`lock_*` / `notify_*` / `process_*` 三组，各含 Windows 实现与非 Windows 空实现）
-- `internal/winreg/`：注册表读写：安装记录与标准卸载入口（`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` / `registry_other.go` 为分平台实现）
+- `shortcut_windows.go`：快捷方式的创建与删除（经 PowerShell 调 `WScript.Shell`）
+- `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动与等待、临时副本目录自删安排（`lock_*` / `notify_*` / `process_*` 三组）
+- `internal/winreg/`：注册表读写：安装记录与标准卸载入口（`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
 - `app.rc`：Windows 资源脚本（exe 图标 + 属性「详细信息」版本信息 + 应用程序清单）
 - `app.manifest`：应用程序清单（声明 `requireAdministrator`）
 - `app_windows_amd64.syso`：由 `app.rc` 编译出的 Windows 资源对象（已提交）
-- `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`appicon.png` 非 Windows 平台窗口图标、`app.ico` exe 多尺寸图标）
+- `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`app.ico` exe 多尺寸图标、`appicon.png` 备用图标素材）
 - `dist/`：打包输出目录（`go build -o dist/`，已在 `.gitignore` 忽略）

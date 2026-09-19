@@ -1,7 +1,7 @@
 //go:build windows
 
 // Package winapi 封装本程序用到的 Windows 系统能力：单实例锁、系统弹窗、
-// 进程启动与等待。非 Windows 平台提供空实现，仅保证可编译。
+// 进程启动与等待。
 package winapi
 
 import (

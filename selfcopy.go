@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -79,11 +78,9 @@ func isSelfWithin(dir string) bool {
 }
 
 // pathWithin 判断 target 是否位于 base 之内；base 尚不存在也能判断。
-// Windows 下先统一大小写，避免注册表里的路径与实际路径大小写不同导致漏判。
+// 先统一大小写，避免注册表里的路径与实际路径大小写不同导致漏判。
 func pathWithin(base, target string) bool {
-	if runtime.GOOS == "windows" {
-		base, target = strings.ToLower(base), strings.ToLower(target)
-	}
+	base, target = strings.ToLower(base), strings.ToLower(target)
 	rel, err := filepath.Rel(base, target)
 	if err != nil {
 		return false
@@ -91,13 +88,9 @@ func pathWithin(base, target string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
-// samePath 判断两个路径是否指向同一个文件（Windows 下大小写不敏感）。
+// samePath 判断两个路径是否指向同一个文件（大小写不敏感）。
 func samePath(a, b string) bool {
-	a, b = filepath.Clean(a), filepath.Clean(b)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 // relayToTemp 把自身复制到临时目录并重启一个副本来继续执行 c，本进程随即退出。

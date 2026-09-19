@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -28,9 +27,6 @@ import (
 
 //go:embed icon/Startlogo.png
 var startLogoPNG []byte
-
-//go:embed icon/appicon.png
-var appIconPNG []byte
 
 //go:generate windres -c 65001 app.rc -O coff -o app_windows_amd64.syso
 
@@ -653,12 +649,9 @@ func run() int {
 // 传 --action=uninstall 时会直接弹出卸载确认框，省去在主界面再点一次。
 func runGUI(cmd command) {
 	a := app.New()
-	// 窗口图标：Windows 交给 exe 里由 app.rc 链入的多尺寸图标（含 16/20/24/32 等）。
+	// 窗口图标交给 exe 里由 app.rc 链入的多尺寸图标（含 16/20/24/32 等）。
 	// 这里若再设单张位图，Fyne 会按原图尺寸交给系统，标题栏/任务栏要 16/32 时
-	// 只能把它缩小，反而变糊；其他平台没有 exe 资源，仍用内嵌 PNG。
-	if runtime.GOOS != "windows" {
-		a.SetIcon(fyne.NewStaticResource("appicon.png", appIconPNG))
-	}
+	// 只能把它缩小，反而变糊。
 
 	w := a.NewWindow("KfuPetInstall")
 	w.Resize(fyne.NewSize(600, 420))

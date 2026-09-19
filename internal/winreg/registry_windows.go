@@ -1,7 +1,6 @@
 //go:build windows
 
 // Package winreg 封装 KfuPet 的注册表读写：安装记录与 Windows 标准卸载入口。
-// 非 Windows 平台提供空实现，仅保证可编译。
 package winreg
 
 import (
