@@ -69,6 +69,39 @@ func readInstallRecord(root registry.Key) (*InstallRecord, error) {
 	return &InstallRecord{InstallPath: installPath, DisplayVersion: version}, nil
 }
 
+// ReadMachineInstallRecord 只读机器级安装记录。
+// ReadInstallRecord 会回退到 HKCU，拿回一条早期版本写在用户域的记录，
+// 而那并不能说明机器级已经写好——「修复」要用它判断记录是否真的补齐到位。
+// 记录不存在时返回 (nil, nil)。
+func ReadMachineInstallRecord() (*InstallRecord, error) {
+	return readInstallRecord(registry.LOCAL_MACHINE)
+}
+
+// ReadUninstallEntry 读取机器级标准卸载入口；入口不存在时返回 (nil, nil)。
+// 不存在的判断只看键，键下某个值缺失时按空串返回，由调用方逐字段比对。
+func ReadUninstallEntry() (*UninstallEntry, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, uninstallEntryPath, registry.QUERY_VALUE|regView)
+	if err != nil {
+		if errors.Is(err, registry.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer k.Close()
+
+	get := func(name string) string {
+		v, _, _ := k.GetStringValue(name)
+		return v
+	}
+	return &UninstallEntry{
+		DisplayName:     get("DisplayName"),
+		DisplayVersion:  get("DisplayVersion"),
+		UninstallString: get("UninstallString"),
+		DisplayIcon:     get("DisplayIcon"),
+		Publisher:       get("Publisher"),
+	}, nil
+}
+
 // WriteInstallRecord 写入（或覆盖）机器级安装记录。
 func WriteInstallRecord(rec InstallRecord) error {
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, installRegistryPath, registry.SET_VALUE|regView)

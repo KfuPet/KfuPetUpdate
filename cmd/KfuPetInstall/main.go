@@ -170,15 +170,19 @@ func publishLine(rel *releaseInfo) string {
 type installPhase int
 
 const (
-	phaseIdle          installPhase = iota // 不在安装流程中，展示主界面
-	phaseChooseDir                         // 向导第一步：选择安装位置
-	phaseOptions                           // 向导第二步：安装选项
-	phaseRunning                           // 正在安装
-	phaseDone                              // 安装完成
-	phaseFailed                            // 安装失败
-	phaseUpgrading                         // 正在升级
-	phaseUpgradeDone                       // 升级完成
-	phaseUpgradeFailed                     // 升级失败
+	phaseIdle           installPhase = iota // 不在流程中，展示主界面
+	phaseChooseDir                          // 向导第一步：选择安装位置
+	phaseOptions                            // 向导第二步：安装选项
+	phaseRunning                            // 正在安装
+	phaseDone                               // 安装完成
+	phaseFailed                             // 安装失败
+	phaseUpgrading                          // 正在升级
+	phaseUpgradeDone                        // 升级完成
+	phaseUpgradeFailed                      // 升级失败
+	phaseRepairChecking                     // 修复第一步：体检
+	phaseRepairing                          // 正在修复
+	phaseRepairDone                         // 修复完成
+	phaseRepairFailed                       // 修复失败
 )
 
 // appState 是界面的全部可变状态；每次变化后整体重建界面。
@@ -192,15 +196,19 @@ type appState struct {
 	targetDir  string          // 本次安装的目标目录
 	opts       installOptions  // 本次安装的选项
 	progress   installProgress // 最近一次进度汇报
-	installErr error           // 安装失败原因
+	installErr error           // 安装/升级/修复失败原因
 	waitKfuPet bool            // 升级是否由桌宠拉起：决定升级步骤清单是否含「等待退出」
+	repair     repairPlan      // 本次修复的体检结论与执行清单
 }
 
 // uiHandlers 是主界面各操作入口。
+// 已安装状态下没有「升级」：升级要先把 KfuPet 关掉，而只有 KfuPet 自己知道
+// 什么时候能退，因此升级只由它发起（`--action=update`）；手动入口提供的是「修复」——
+// 补齐被杀软清掉或被误删的文件与安装信息（见 README「修复流程」）。
 type uiHandlers struct {
 	retryCheck func()
 	install    func()
-	upgrade    func()
+	repair     func()
 	uninstall  func()
 }
 
@@ -222,13 +230,13 @@ type flowHandlers struct {
 
 // buildMainUI 组装主界面。
 // 可用操作由注册表安装状态决定：未安装只提供「安装」，
-// 已安装提供「升级」「卸载」，「安装」不再出现。
+// 已安装提供「修复」「卸载」，「安装」不再出现。
 // 返回内容连同左上角 Logo 的遮罩，供闪屏 Logo 渐隐后衔接渐显。
 func buildMainUI(s appState, h uiHandlers) (fyne.CanvasObject, *uifx.Cover) {
 	var actions []fyne.CanvasObject
 	if s.st.Installed {
 		actions = append(actions,
-			widget.NewButton("升级", h.upgrade),
+			widget.NewButton("修复", h.repair),
 			widget.NewButton("卸载", h.uninstall),
 		)
 	} else {
@@ -763,8 +771,10 @@ func runGUI(cmd command) {
 	var startVersionCheck func()
 	var startInstall func()
 	var startUpgrade func(dir string)
+	var startRepair func()
+	var runRepair func(plan repairPlan)
 	var startUninstall func(keepUserData bool)
-	var installing *installingView // 进行中页面（安装/升级）：原地更新，不随 render 重建
+	var installing *installingView // 进行中页面（安装/升级/修复）：原地更新，不随 render 重建
 	var upgradeDir string          // 本次升级的目标安装目录，失败重试时复用
 	uninstallPrompted := false     // 标准卸载入口只自动弹一次确认框，避免重试查询时重复弹出
 
@@ -793,22 +803,30 @@ func runGUI(cmd command) {
 	}
 
 	render = func() {
-		// 安装向导与升级流程期间整屏切换到流程页，结束后再回到主界面。
+		// 安装向导与升级/修复流程期间整屏切换到流程页，结束后再回到主界面。
 		if state.phase != phaseIdle {
-			if state.phase == phaseRunning || state.phase == phaseUpgrading {
+			// 体检页是静态的（转圈 + 文案），单独处理。
+			if state.phase == phaseRepairChecking {
+				setContent(buildRepairCheckingView())
+				return
+			}
+			if state.phase == phaseRunning || state.phase == phaseUpgrading || state.phase == phaseRepairing {
 				if installing == nil {
 					// 进行中的页面在原地更新，不随 render 重建：步骤画勾、流光等
 					// 动画才能连续播放。
-					if state.phase == phaseUpgrading {
+					switch state.phase {
+					case phaseUpgrading:
 						installing = newUpgradingView(state)
-					} else {
+					case phaseRepairing:
+						installing = newRepairingView(state)
+					default:
 						installing = newInstallingView("KfuPet 安装中", stagesFor(state.opts), state)
 					}
 				}
 				setContent(installing.root)
 				return
 			}
-			// 升级的两张结果页不属于安装向导，单独分流。
+			// 升级与修复的结果页不属于安装向导，单独分流。
 			if state.phase == phaseUpgradeDone {
 				if state.waitKfuPet {
 					// 桌宠拉起的那条路径没人守着界面，升完自动把桌宠拉回来。
@@ -830,6 +848,24 @@ func runGUI(cmd command) {
 			if state.phase == phaseUpgradeFailed {
 				setContent(buildInstallFailedView("升级失败", state.installErr, upgradeDir,
 					func() { startUpgrade(upgradeDir) }, backToMain))
+				return
+			}
+			if state.phase == phaseRepairDone {
+				setContent(buildRepairDoneView(state.st.Path, state.st.Version, state.repair.summary(),
+					func() {
+						if err := launchKfuPet(state.st.Path); err != nil {
+							dialog.ShowError(err, w)
+							return
+						}
+						a.Quit()
+					},
+					func() { a.Quit() }))
+				return
+			}
+			if state.phase == phaseRepairFailed {
+				// 重试重做一遍体检：失败后现场可能已变，按旧结论重跑并不安全。
+				setContent(buildInstallFailedView("修复失败", state.installErr, state.st.Path,
+					func() { startRepair() }, backToMain))
 				return
 			}
 			setContent(buildInstallView(state, flowHandlers{
@@ -907,22 +943,7 @@ func runGUI(cmd command) {
 				}
 				confirmInstallEnv(w, begin)
 			},
-			upgrade: func() {
-				// 升级要整体替换整个安装目录，KfuPet 在跑就替换不掉。
-				// 这里不做自动关闭，直接让用户先退出（与卸载策略一致，也不会打断
-				// 用户正在做的事）；由桌宠拉起的那条路径则靠 --wait-pid 等它让位。
-				if kfuPetRunning(state.st.Path) {
-					dialog.ShowError(fmt.Errorf("KfuPet 正在运行，请先退出后再升级"), w)
-					return
-				}
-				// 沿用注册表记录的安装目录，不再询问位置与选项；动手前先确认一次。
-				confirmUpgrade(w, func(continueUpdate bool) {
-					if !continueUpdate {
-						return // 留在主界面，什么都不做
-					}
-					startUpgrade(state.st.Path)
-				})
-			},
+			repair:    func() { startRepair() },
 			uninstall: func() { confirmUninstall(w, startUninstall) },
 		})
 		if logoFadePending {
@@ -1096,6 +1117,95 @@ func runGUI(cmd command) {
 						scheduleRelaunch(a, w, state.st.Path)
 					}
 				}
+			})
+		}()
+	}
+
+	// 修复：体检 → 报告并确认 → 缺什么补什么。
+	// 与安装/升级不同，修复不替换整个安装目录，只覆盖校验不通过的文件，
+	// 因此不需要交棒临时副本，也不会动用户自己加进安装目录的内容。
+	startRepair = func() {
+		installDir, localVer := state.st.Path, state.st.Version
+		if installDir == "" {
+			return
+		}
+		state.phase = phaseRepairChecking
+		state.installErr = nil
+		render()
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+			defer cancel()
+
+			plan := inspectInstall(ctx, checker, installDir, localVer, nil)
+
+			fyne.Do(func() {
+				// 要覆盖 KfuPet 的程序文件时它必须先退出：正在运行的映像替换不掉。
+				// 只补常驻副本/快捷方式/安装信息时不碰这些文件，不必拦下用户。
+				if plan.needsKfuPetClosed() && kfuPetRunning(installDir) {
+					state.phase = phaseIdle
+					render()
+					dialog.ShowError(fmt.Errorf("KfuPet 正在运行，请先退出后再修复"), w)
+					return
+				}
+				if !plan.needsWork() {
+					state.phase = phaseIdle
+					render()
+					// 本地项都正常、只是程序文件没校验成（无网等）时，别说成"无需修复"。
+					if len(plan.coreMissing) > 0 || plan.coreSkipReason != "" {
+						showRepairIncomplete(w, plan)
+					} else {
+						showNothingToRepair(w, plan)
+					}
+					return
+				}
+				confirmRepair(w, plan, func(start bool) {
+					if !start {
+						state.phase = phaseIdle
+						render()
+						return
+					}
+					runRepair(plan)
+				})
+			})
+		}()
+	}
+
+	runRepair = func(plan repairPlan) {
+		state.repair = plan
+		state.phase = phaseRepairing
+		state.installErr = nil
+		state.progress = installProgress{Stage: repairStagesFor(plan.needsDownload())[0]}
+		installing = nil // 强制重建进行中页面（步骤清单按是否需要下载而定）
+		render()
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+			defer cancel()
+
+			res, err := repairKfuPet(ctx, plan, func(p installProgress) {
+				fyne.Do(func() {
+					state.progress = p
+					// 原地更新，不整页重建：步骤画勾、流光等动画才能连续播放
+					if installing != nil {
+						installing.update(p)
+					}
+				})
+			})
+
+			fyne.Do(func() {
+				installing = nil
+				if err != nil {
+					state.phase = phaseRepairFailed
+					state.installErr = err
+					render()
+					return
+				}
+				// 重新检测：修复可能改过版本号，主界面要如实反映现状。
+				state.repair = res.plan
+				state.st = detectInstallState()
+				state.phase = phaseRepairDone
+				render()
 			})
 		}()
 	}
