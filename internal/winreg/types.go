@@ -14,4 +14,9 @@ type UninstallEntry struct {
 	UninstallString string // 点「卸载」时执行的命令
 	DisplayIcon     string // 图标来源
 	Publisher       string // 发布者
+
+	// EstimatedSize 是安装目录体积（单位 KB），「应用和功能」用它显示占用空间；
+	// 为 0 表示算不出来，此时不写这一项。必须是 DWORD，写成字符串会被忽略。
+	// 只写不读：它随目录内容变化，与安装信息是否完整无关，不参与修复时的逐项比对。
+	EstimatedSize uint32
 }

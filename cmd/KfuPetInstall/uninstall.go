@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -31,6 +33,7 @@ func userDataDirs() []string {
 // UninstallString 指向安装目录内的常驻副本，而不是当初被运行的那个 exe 路径：
 // 后者可能位于下载目录，用户一删「应用和功能」里的卸载就成了死链接。
 // 带上 --action=uninstall 让入口直接进卸载确认，不必再在主界面点一次。
+// 体积一栏由 dirSizeKB 现算，安装与修复每次写入口时都会顺带刷新。
 func uninstallEntryFor(installDir, version string) winreg.UninstallEntry {
 	return winreg.UninstallEntry{
 		DisplayName: "KfuPet",
@@ -39,7 +42,33 @@ func uninstallEntryFor(installDir, version string) winreg.UninstallEntry {
 		DisplayVersion:  version,
 		DisplayIcon:     filepath.Join(installDir, executableName),
 		Publisher:       "KfuPet",
+		EstimatedSize:   dirSizeKB(installDir),
 	}
+}
+
+// dirSizeKB 估算安装目录体积（单位 KB），供「应用和功能」显示占用空间。
+// 取的是写入口那一刻的快照：KfuPet 之后自行下载的角色模型不计入，显示上偏小，
+// 但这一栏本就是给人看的参考值，不值得为它再定期重扫。
+// 目录不存在或子项读不到时返回 0，由调用方决定跳过这一项，绝不因此中断安装/修复。
+func dirSizeKB(dir string) uint32 {
+	var total int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // 单个子项读不到就跳过，尽力而为
+		}
+		if !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+
+	kb := total / 1024
+	if kb > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(kb)
 }
 
 // uninstallKfuPet 卸载 KfuPet，返回被降级为警告的问题。

@@ -136,6 +136,13 @@ func WriteUninstallEntry(e UninstallEntry) error {
 			return err
 		}
 	}
+	// EstimatedSize 是 DWORD（单位 KB）：「应用和功能」按它显示占用体积，
+	// 写成字符串会被忽略、那一列一直空着。算不出体积（为 0）时不写这一项。
+	if e.EstimatedSize > 0 {
+		if err := k.SetDWordValue("EstimatedSize", e.EstimatedSize); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
