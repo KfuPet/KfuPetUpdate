@@ -173,9 +173,10 @@ func validatePackageFile(path string) error {
 
 // installerSource 是本次安装使用的安装包文件来源。
 type installerSource struct {
-	path    string    // 安装包在磁盘上的路径
-	art     *artifact // 用于校验的发布信息产物；离线且取不到发布信息时为 nil
-	cleanup func()    // 用完后的清理动作（在线安装删临时文件；离线安装无操作）
+	path     string           // 安装包在磁盘上的路径
+	art      *artifact        // 用于校验的发布信息产物；离线且取不到发布信息时为 nil
+	manifest *releaseManifest // 发布版附带的哈希清单；取不到时为 nil，退回发布信息校验
+	cleanup  func()           // 用完后的清理动作（在线安装删临时文件；离线安装无操作）
 }
 
 // resolveInstallerSource 准备本次安装要用的安装包：
@@ -193,7 +194,9 @@ func resolveInstallerSource(ctx context.Context, rel *releaseInfo, opts installO
 				art = a
 			}
 		}
-		return installerSource{path: opts.Package, art: art, cleanup: func() {}}, nil
+		// 清单同样是"取到就用"，取不到不影响离线安装。
+		man, _ := fetchManifest(ctx, rel)
+		return installerSource{path: opts.Package, art: art, manifest: man, cleanup: func() {}}, nil
 	}
 
 	if rel == nil {
@@ -209,7 +212,10 @@ func resolveInstallerSource(ctx context.Context, rel *releaseInfo, opts installO
 	if err != nil {
 		return installerSource{}, err
 	}
-	return installerSource{path: path, art: art, cleanup: func() { os.Remove(path) }}, nil
+	// 清单以选定源为优先。镜像源（Gitee）的接口不提供摘要，正是靠清单才能校验
+	// 从它下到的包；取不到清单时退回原有的逐级降级校验。
+	man, _ := fetchManifest(ctx, rel)
+	return installerSource{path: path, art: art, manifest: man, cleanup: func() { os.Remove(path) }}, nil
 }
 
 // versionPattern 用于从安装包文件名中提取形如 1.2.3 的版本号。
@@ -307,7 +313,7 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	}
 	defer src.cleanup()
 
-	if err := verifyArchive(src.path, src.art, report); err != nil {
+	if err := verifyArchive(src.path, src.art, src.manifest, report); err != nil {
 		return installResult{}, err
 	}
 
@@ -691,25 +697,38 @@ func copyWithProgress(dst io.Writer, src io.Reader, total int64, req downloadReq
 }
 
 // verifyArchive 校验安装包。
-// 有发布信息时：GitHub 给出 sha256 摘要就比对，没有摘要则退回校验文件大小；
-// 离线安装拿不到发布信息时（art 为 nil），退回最低限度校验——确认是可打开的 zip。
-func verifyArchive(path string, art *artifact, report progressFunc) error {
+// 拿到哈希清单时以清单里的压缩包 sha256 为准——它不依赖发布接口是否给摘要，
+// 因此从镜像源下到的包也能验证；其次是发布信息的 sha256 摘要，再次是文件大小；
+// 都没有时（离线安装拿不到清单）退回最低限度校验——确认是可打开的 zip。
+func verifyArchive(path string, art *artifact, man *releaseManifest, report progressFunc) error {
 	reportStage(report, stageVerifying)
+
+	if man != nil && man.ZipSHA256 != "" {
+		// 选定源同时给出摘要时交叉核对：两者不一致说明清单与包并非同一次发布，
+		// 与其照着一份对不上的清单放行，不如直接报错。
+		if art != nil {
+			if digest := sha256Hex(art.Digest); digest != "" && digest != man.ZipSHA256 {
+				return errors.New("安装包校验失败：哈希清单与发布信息不一致")
+			}
+		}
+		got, err := fileSHA256(path)
+		if err != nil {
+			return err
+		}
+		if got != man.ZipSHA256 {
+			return errors.New("安装包校验失败：sha256 与哈希清单不符")
+		}
+		return nil
+	}
 
 	if art != nil {
 		if want := sha256Hex(art.Digest); want != "" {
-			f, err := os.Open(path)
+			got, err := fileSHA256(path)
 			if err != nil {
 				return err
 			}
-			h := sha256.New()
-			_, copyErr := io.Copy(h, f)
-			f.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			if got := hex.EncodeToString(h.Sum(nil)); got != want {
-				return fmt.Errorf("安装包校验失败：sha256 与发布信息不符")
+			if got != want {
+				return errors.New("安装包校验失败：sha256 与发布信息不符")
 			}
 			return nil
 		}
@@ -728,6 +747,21 @@ func verifyArchive(path string, art *artifact, report progressFunc) error {
 
 	// 没有摘要可依据时，至少确认文件是可打开的 zip，把"选错文件"挡在解压之前。
 	return checkZipReadable(path)
+}
+
+// fileSHA256 计算文件的 sha256，返回小写十六进制串。
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // checkZipReadable 确认文件是可打开的 zip，供拿不到发布信息时做最低限度校验。

@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime"
 	"strings"
@@ -161,6 +165,121 @@ func (r *releaseInfo) artifactsFor() []artifact {
 	appendMatching(r.Artifacts)
 	appendMatching(r.Mirrors)
 	return out
+}
+
+// manifestName 是随发布版一起上传的哈希清单文件名（由 gen-manifest.ps1 生成）。
+const manifestName = "KfuPet-manifest.json"
+
+// manifestTimeout 是取清单的时限。清单只有 1 KB 上下，重试也便宜，
+// 因此给得比安装包下载短得多：拿不到就退回发布信息里能用的校验手段。
+const manifestTimeout = 10 * time.Second
+
+// manifestMaxBytes 是清单体积上限，防止把别的文件（HTML 错误页、压缩包等）整个读进内存。
+const manifestMaxBytes = 256 << 10
+
+// fileDigest 是清单中单个文件的哈希与大小。
+type fileDigest struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+// releaseManifest 是发布版附带的哈希清单：压缩包自身的 sha256，
+// 以及包内根级文件的逐个哈希（后者供「修复」比对）。
+type releaseManifest struct {
+	Version   string       `json:"version"`
+	ZipSHA256 string       `json:"zipSha256"`
+	Files     []fileDigest `json:"files"`
+}
+
+// manifestCandidates 返回哈希清单的候选直链：选定源在前，镜像源按源顺序追加。
+func (r *releaseInfo) manifestCandidates() []artifact {
+	var out []artifact
+	appendMatching := func(list []artifact) {
+		for i := range list {
+			if list[i].Name == manifestName {
+				out = append(out, list[i])
+			}
+		}
+	}
+	appendMatching(r.Artifacts)
+	appendMatching(r.Mirrors)
+	return out
+}
+
+// fetchManifest 取回本次发布版的哈希清单。
+// 取不到（旧发布版没带清单，或所有源都不可达）时返回错误，
+// 由调用方退回原有校验，不影响安装本身。
+func fetchManifest(ctx context.Context, rel *releaseInfo) (*releaseManifest, error) {
+	if rel == nil {
+		return nil, errors.New("缺少发布信息，无法获取哈希清单")
+	}
+	candidates := rel.manifestCandidates()
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("发布版 %s 未附带 %s", rel.Version, manifestName)
+	}
+
+	var fails []string
+	for _, art := range candidates {
+		man, err := downloadManifest(ctx, art)
+		if err == nil {
+			// 清单版本必须与本次发布一致：镜像源若挂着旧清单，
+			// 会把版本不符的包判成"校验通过"。
+			if want := normalizeVersion(rel.Version); man.Version != want {
+				err = fmt.Errorf("清单版本 %s 与发布版 %s 不符", man.Version, want)
+			} else {
+				return man, nil
+			}
+		}
+		fails = append(fails, fmt.Sprintf("%s：%v", urlHost(art.DownloadURL), err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, fmt.Errorf("获取哈希清单失败（%s）", strings.Join(fails, "；"))
+}
+
+// downloadManifest 从单个直链取回并解析清单。
+// 选定源（GitHub）会给出清单附件的摘要，据此确认取回的字节没有被截断或篡改。
+func downloadManifest(ctx context.Context, art artifact) (*releaseManifest, error) {
+	ctx, cancel := context.WithTimeout(ctx, manifestTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, art.DownloadURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "KfuPetUpdate-Updater")
+
+	// 两个源的直链都会 302 到实际存储，需跟随重定向，因此用默认 client。
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, manifestMaxBytes))
+	if err != nil {
+		return nil, err
+	}
+	if want := sha256Hex(art.Digest); want != "" {
+		sum := sha256.Sum256(body)
+		if hex.EncodeToString(sum[:]) != want {
+			return nil, errors.New("清单内容与发布信息不符")
+		}
+	}
+
+	var man releaseManifest
+	if err := json.Unmarshal(body, &man); err != nil {
+		return nil, fmt.Errorf("清单无法解析：%w", err)
+	}
+	if man.ZipSHA256 == "" {
+		return nil, errors.New("清单中缺少压缩包哈希")
+	}
+	return &man, nil
 }
 
 // normalizeVersion 去掉版本号的 v 前缀，注册表中统一存不带前缀的形式。

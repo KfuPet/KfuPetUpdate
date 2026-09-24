@@ -54,8 +54,7 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 
 ### 发布清单生成
 
-`gen-manifest.ps1` 生成 `KfuPet-manifest.json`——压缩包 sha256 + 随包发布的根级文件哈希，
-供 KfuPetInstall 后续的「修复」功能做逐文件校验；`Characters` 等子目录不收录。
+`gen-manifest.ps1` 生成 `KfuPet-manifest.json`——压缩包 sha256（安装时校验安装包用）+ 随包发布的根级文件哈希（供后续的「修复」功能做逐文件校验）；`Characters` 等子目录不收录。
 生成时会逐文件核对目录与压缩包一致，先打包后又改目录会直接报错、不产出清单：
 
 ```powershell
@@ -67,7 +66,7 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 
 ### 安装流程
 
-主界面点「安装」进入向导：**选择安装位置**（默认 `%ProgramFiles%\KfuPet`，可浏览自定义）→ **安装选项**（桌面/开始菜单快捷方式 + 安装方式）→ 安装。安装目录整体替换（先落暂存目录再改名），下载带 sha256 校验，快捷方式经 PowerShell 调 `WScript.Shell` 创建——建在"所有用户"目录（公共桌面 / 公共开始菜单），全机用户都能看到。
+主界面点「安装」进入向导：**选择安装位置**（默认 `%ProgramFiles%\KfuPet`，可浏览自定义）→ **安装选项**（桌面/开始菜单快捷方式 + 安装方式）→ 安装。安装目录整体替换（先落暂存目录再改名），下载后按发布版附带的 `KfuPet-manifest.json` 里的压缩包 sha256 校验，快捷方式经 PowerShell 调 `WScript.Shell` 创建——建在"所有用户"目录（公共桌面 / 公共开始菜单），全机用户都能看到。
 
 安装包已不再自带 .NET 运行时，因此启动时会在查询版本的同时检测本机是否装有 KfuPet 所需的 **.NET 桌面运行时**（Microsoft Windows Desktop Runtime 8.0.x）。缺失时，主界面点「安装」会先弹窗询问是否一并安装（默认勾选，取消则放弃本次安装）。安装时运行环境排在 KfuPet 本体之前，用 `/install /quiet /norestart` **静默安装、不弹任何窗口**。
 
@@ -77,6 +76,8 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 
 - **在线安装**（默认）：从 GitHub Releases 直链下载安装包；GitHub 不可达时自动改用 Gitee 国内镜像。
 - **离线安装**：使用本地已下载好的安装包（点「选择安装包…」选取 zip），安装过程跳过下载、直接从校验阶段开始，断网也能装。有发布信息时按 sha256 严格校验，拿不到发布信息时只校验是可打开的 zip 且含 `KfuPet.exe`；版本号取自发布信息，取不到时尝试从文件名解析，再不行记为「未知」。
+
+校验安装包时以 `KfuPet-manifest.json` 里的 `zipSha256` 为准：Gitee 的发布接口不提供摘要，只有清单才能校验从镜像源下到的包；选定源（GitHub）同时给出摘要时会交叉核对，两者不一致直接报错。清单取不到（旧发布版没带、或网络不通）时逐级退回发布信息的 sha256 摘要、文件大小，最后才退到"能打开的 zip"。清单随安装包一起下载，约 1 KB，单个源最多等 10 秒，失败不阻断安装。
 
 下载安装包的候选直链有 GitHub 与 Gitee 两处（GitHub 优先）。下载前先对候选做**并发** HEAD 探测（5 秒超时）、把可达的排到前面，再按序下载；连接被重置、握手超时这类瞬时失败很常见，因此每个源最多尝试 **3 次**、
 每次间隔 2 秒，三次都失败就换下一个候选（安装被取消或整体超时则立即停止，不再重试）。换源时进度条会从 0 重走一遍。
@@ -157,9 +158,9 @@ KfuPet 侧须读同一处（见「卸载流程」）。
 - `gen-manifest.ps1`：发布清单生成脚本（zip sha256 + 随包发布的根级文件哈希，生成时核对目录与 zip 逐文件一致，不一致即报错）；**须保持 UTF-8 with BOM 编码**
 - `cmd/KfuPetInstall/`：主程序（`package main`），唯一的编译入口；资源与图标必须与包放在同一目录，才能被链入 exe
   - `main.go`：界面层（启动闪屏、主界面、安装向导各页面）与界面状态机（安装/升级流程的分流）
-  - `update.go`：版本查询逻辑（GitHub 源优先，失败时回退到 Gitee 国内镜像），以及发布版产物（安装包）的解析与挑选
+  - `update.go`：版本查询逻辑（GitHub 源优先，失败时回退到 Gitee 国内镜像），以及发布版产物（安装包）与哈希清单（`KfuPet-manifest.json`）的解析与挑选
   - `install.go`：安装状态检测（读取注册表安装记录并校验安装目录内程序是否仍存在）
-  - `installer.go`：安装流程（下载 → sha256 校验 → 解压 → 替换安装目录 → 创建快捷方式 → 写注册表；运行环境排在 KfuPet 本体之前）
+  - `installer.go`：安装流程（下载 → 按哈希清单/发布信息校验 sha256 → 解压 → 替换安装目录 → 创建快捷方式 → 写注册表；运行环境排在 KfuPet 本体之前）
   - `upgrade.go`：升级流程（等桌宠让位 → 查询最新版本 → 版本比较 → 复用安装流程整体替换），含等待超时后的强杀询问
   - `upgrade_ui.go`：升级界面（进行中/完成/失败页、强杀询问弹窗、完成后自动拉起 KfuPet）
   - `uninstall.go`：卸载流程（删安装目录 → 删快捷方式 → 按选择删个人数据 → 删注册表）与标准卸载入口的内容组装
