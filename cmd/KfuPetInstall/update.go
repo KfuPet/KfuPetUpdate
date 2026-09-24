@@ -40,6 +40,17 @@ const (
 	githubRepo  = "KfuPet"
 )
 
+// 国内镜像仓库：https://gitee.com/lrht/kfu-pet
+// 该仓库只同步发行版附件（不含源码），用于 GitHub 不可达时兜底。
+const (
+	giteeOwner = "lrht"
+	giteeRepo  = "kfu-pet"
+)
+
+// GitHub 源的超时收得比 Gitee 紧：国内直连 GitHub 常被阻断，
+// 干等下去只会拖慢回退到 Gitee 的速度；链路正常时这个值足够完成握手与接口响应。
+const gitHubTimeout = 5 * time.Second
+
 // gitHubSource 从 GitHub Releases 获取最新版本信息。
 type gitHubSource struct {
 	client *http.Client
@@ -47,7 +58,7 @@ type gitHubSource struct {
 
 func newGitHubSource() *gitHubSource {
 	return &gitHubSource{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: &http.Client{Timeout: gitHubTimeout},
 	}
 }
 
@@ -137,15 +148,76 @@ func normalizeVersion(version string) string {
 	return strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
-// serverSource 自建服务器更新源（空壳占位）。
-type serverSource struct{}
+// giteeSource 从 Gitee Releases 获取最新版本信息。
+// Gitee 的 v5 接口读取公开仓库无需鉴权，字段与 GitHub 大体一致，
+// 差异有三处：发布页地址需自行拼接、发布时间字段是 created_at、
+// 附件不提供 size 与 digest（下载侧对两者为 0/空都有兜底）。
+type giteeSource struct {
+	client *http.Client
+}
 
-func newServerSource() *serverSource { return &serverSource{} }
+func newGiteeSource() *giteeSource {
+	return &giteeSource{
+		client: &http.Client{Timeout: 10 * time.Second},
+	}
+}
 
-func (*serverSource) fetchLatest(context.Context) (*releaseInfo, error) {
-	// 尚未接入服务器（空壳占位）：返回 (nil, nil)，表示跳过该源，不视为失败。
-	// 真实接入后，网络/接口异常应返回具体 error，便于上层汇总提示。
-	return nil, nil
+func (s *giteeSource) fetchLatest(ctx context.Context) (*releaseInfo, error) {
+	apiURL := fmt.Sprintf("https://gitee.com/api/v5/repos/%s/%s/releases/latest",
+		giteeOwner, giteeRepo)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "KfuPetUpdate-Updater")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Gitee API 返回状态码 %d", resp.StatusCode)
+	}
+
+	var data struct {
+		TagName   string `json:"tag_name"`
+		Body      string `json:"body"`
+		CreatedAt string `json:"created_at"`
+		Assets    []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	if data.TagName == "" {
+		return nil, fmt.Errorf("Gitee 响应中缺少 tag_name")
+	}
+
+	rel := &releaseInfo{
+		Version: data.TagName,
+		// Gitee 的发布版对象不含 html_url，按 tag 拼发布页地址。
+		ReleasePageURL: fmt.Sprintf("https://gitee.com/%s/%s/releases/tag/%s",
+			giteeOwner, giteeRepo, data.TagName),
+		ReleaseNotes: data.Body,
+	}
+	if t, err := time.Parse(time.RFC3339, data.CreatedAt); err == nil {
+		rel.PublishedAt = t
+	}
+	for _, a := range data.Assets {
+		if a.Name == "" || a.BrowserDownloadURL == "" {
+			continue
+		}
+		rel.Artifacts = append(rel.Artifacts, artifact{
+			Name:        a.Name,
+			DownloadURL: a.BrowserDownloadURL,
+		})
+	}
+	return rel, nil
 }
 
 // namedSource 是带名称的更新源，失败时用于输出可读的错误信息。
@@ -154,7 +226,7 @@ type namedSource struct {
 	source updateSource
 }
 
-// updateChecker 依次尝试多个更新源：GitHub 优先，失败时回退到自建服务器。
+// updateChecker 依次尝试多个更新源：GitHub 优先，失败时回退到 Gitee 国内镜像。
 type updateChecker struct {
 	sources []namedSource
 }
@@ -163,14 +235,14 @@ func newUpdateChecker() *updateChecker {
 	return &updateChecker{
 		sources: []namedSource{
 			{name: "GitHub", source: newGitHubSource()},
-			{name: "自建服务器", source: newServerSource()},
+			{name: "Gitee", source: newGiteeSource()},
 		},
 	}
 }
 
 // check 返回第一个可用更新源的结果。
-// 只有空壳/占位性质的源（返回 nil 且无错误）会被跳过，不算失败；
-// 所有真实源都失败时，返回包含各自失败原因的错误。
+// 某个源返回 (nil, nil) 视为该源暂无数据，跳过继续尝试下一个；
+// 所有源都失败时，返回包含各自失败原因的错误。
 func (c *updateChecker) check(ctx context.Context) (*releaseInfo, error) {
 	var fails []string
 	for _, ns := range c.sources {
@@ -188,8 +260,7 @@ func (c *updateChecker) check(ctx context.Context) (*releaseInfo, error) {
 	case 0:
 		return nil, fmt.Errorf("暂无可用更新源")
 	case 1:
-		// 当前自建服务器还是空壳，实际只有 GitHub 一个真实源，
-		// 此时直接透出它的失败原因（默认即网络类错误）。
+		// 只有一个源报错，直接透出它的失败原因（默认即网络类错误），不额外包裹文字。
 		return nil, fmt.Errorf("%s", fails[0])
 	default:
 		return nil, fmt.Errorf("所有更新源均不可用（%s）", strings.Join(fails, "；"))
