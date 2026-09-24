@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ type releaseInfo struct {
 	ReleaseNotes   string     // 更新说明
 	PublishedAt    time.Time  // 发布时间（UTC），未知时为零值
 	Artifacts      []artifact // 发布版中的可下载产物
+	Mirrors        []artifact // 其它源提供的同名产物，供下载失败时换源重试
 }
 
 // updateSource 更新源接口：获取远端最新发布信息。
@@ -47,9 +49,10 @@ const (
 	giteeRepo  = "kfu-pet"
 )
 
-// GitHub 源的超时收得比 Gitee 紧：国内直连 GitHub 常被阻断，
-// 干等下去只会拖慢回退到 Gitee 的速度；链路正常时这个值足够完成握手与接口响应。
-const gitHubTimeout = 5 * time.Second
+// GitHub 源的超时收得比 Gitee 紧：国内直连 GitHub 常被阻断，干等下去只会拖慢回退到 Gitee 的速度。
+// 代价是 GitHub 可达但慢于这个值时会被判为失败、改由 Gitee 兜底——镜像若落后于主源，
+// 用户会被告知"已是最新"。
+const gitHubTimeout = 3 * time.Second
 
 // gitHubSource 从 GitHub Releases 获取最新版本信息。
 type gitHubSource struct {
@@ -141,6 +144,23 @@ func (r *releaseInfo) artifactFor() (*artifact, error) {
 	}
 	return nil, fmt.Errorf("发布版 %s 未提供当前平台（%s-%s）的安装包",
 		r.Version, runtime.GOOS, runtime.GOARCH)
+}
+
+// artifactsFor 返回当前平台安装包的全部候选直链：选定源在前，镜像源按源顺序追加。
+// 下载层按这个顺序逐个尝试；与 artifactFor 的区别是它不会在第一个匹配处停下。
+func (r *releaseInfo) artifactsFor() []artifact {
+	suffix := assetSuffix()
+	var out []artifact
+	appendMatching := func(list []artifact) {
+		for i := range list {
+			if strings.HasSuffix(list[i].Name, suffix) {
+				out = append(out, list[i])
+			}
+		}
+	}
+	appendMatching(r.Artifacts)
+	appendMatching(r.Mirrors)
+	return out
 }
 
 // normalizeVersion 去掉版本号的 v 前缀，注册表中统一存不带前缀的形式。
@@ -240,29 +260,62 @@ func newUpdateChecker() *updateChecker {
 	}
 }
 
-// check 返回第一个可用更新源的结果。
-// 某个源返回 (nil, nil) 视为该源暂无数据，跳过继续尝试下一个；
-// 所有源都失败时，返回包含各自失败原因的错误。
+// check 并发查询全部更新源，返回以第一个成功源为准的发布信息。
+// 并发只为省掉串行等待：选定源仍由 sources 的顺序决定，与谁先返回无关。
+// 其余源的同名产物收进 Mirrors，供下载层在某个源连不上时换源；
+// 版本号与选定源不一致的源直接丢弃——镜像比主源旧时若照用它的直链，
+// 会下到与所报版本不符的包。
 func (c *updateChecker) check(ctx context.Context) (*releaseInfo, error) {
-	var fails []string
-	for _, ns := range c.sources {
-		rel, err := ns.source.fetchLatest(ctx)
-		if err != nil {
-			fails = append(fails, fmt.Sprintf("%s源：%v", ns.name, err))
+	// 每个 goroutine 只写自己那一位，无需加锁。
+	type sourceResult struct {
+		rel *releaseInfo
+		err error
+	}
+	results := make([]sourceResult, len(c.sources))
+	var wg sync.WaitGroup
+	for i := range c.sources {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i].rel, results[i].err = c.sources[i].source.fetchLatest(ctx)
+		}()
+	}
+	wg.Wait()
+
+	// 按源优先级归集结果，而不是按返回先后。
+	var (
+		primary *releaseInfo
+		mirrors []artifact
+		fails   []string
+	)
+	for i, ns := range c.sources {
+		if results[i].err != nil {
+			fails = append(fails, fmt.Sprintf("%s源：%v", ns.name, results[i].err))
 			continue
 		}
-		if rel != nil {
-			return rel, nil // 当前源成功，直接返回
+		if results[i].rel == nil {
+			continue // 该源暂无数据，跳过
+		}
+		if primary == nil {
+			primary = results[i].rel // 第一个成功的源就是选定源
+			continue
+		}
+		if results[i].rel.Version == primary.Version {
+			mirrors = append(mirrors, results[i].rel.Artifacts...)
 		}
 	}
 
-	switch len(fails) {
-	case 0:
-		return nil, fmt.Errorf("暂无可用更新源")
-	case 1:
-		// 只有一个源报错，直接透出它的失败原因（默认即网络类错误），不额外包裹文字。
-		return nil, fmt.Errorf("%s", fails[0])
-	default:
-		return nil, fmt.Errorf("所有更新源均不可用（%s）", strings.Join(fails, "；"))
+	if primary == nil {
+		switch len(fails) {
+		case 0:
+			return nil, fmt.Errorf("暂无可用更新源")
+		case 1:
+			// 只有一个源报错，直接透出它的失败原因（默认即网络类错误），不额外包裹文字。
+			return nil, fmt.Errorf("%s", fails[0])
+		default:
+			return nil, fmt.Errorf("所有更新源均不可用（%s）", strings.Join(fails, "；"))
+		}
 	}
+	primary.Mirrors = mirrors
+	return primary, nil
 }

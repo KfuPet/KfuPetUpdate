@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"kfupet-installer/internal/dotnet"
@@ -201,7 +203,9 @@ func resolveInstallerSource(ctx context.Context, rel *releaseInfo, opts installO
 	if err != nil {
 		return installerSource{}, err
 	}
-	path, err := downloadArtifact(ctx, art, report)
+	// art 只用于校验，固定取选定源的产物（它带 sha256 摘要）；
+	// 下载则按候选列表逐个尝试，可能最终来自镜像源。
+	path, err := downloadArtifact(ctx, rel.artifactsFor(), report)
 	if err != nil {
 		return installerSource{}, err
 	}
@@ -434,6 +438,9 @@ const (
 	downloadAttempts = 3
 	// downloadRetryDelay 是两次尝试之间的等待，给瞬时故障一点恢复时间。
 	downloadRetryDelay = 2 * time.Second
+	// probeTimeout 是单个候选直链的探测超时。探测只为尽快把连不上的源排到后面，
+	// 所以给得比下载短得多；超时即视为不可达。
+	probeTimeout = 5 * time.Second
 )
 
 // downloadRequest 描述一次下载：地址、完整性预期、临时文件后缀与所属阶段。
@@ -445,13 +452,105 @@ type downloadRequest struct {
 }
 
 // downloadArtifact 把安装包下载到临时文件，返回其路径。
-func downloadArtifact(ctx context.Context, art *artifact, report progressFunc) (string, error) {
-	return downloadWithRetry(ctx, downloadRequest{
-		url:      art.DownloadURL,
-		expected: art.Size,
-		suffix:   ".zip",
-		stage:    stageDownloading,
-	}, report)
+// candidates 是同一个安装包的候选直链（选定源在前，镜像源在后）：
+// 先探测把可达的提前，再按顺序下载，一个源彻底失败就换下一个。
+func downloadArtifact(ctx context.Context, candidates []artifact, report progressFunc) (string, error) {
+	if len(candidates) == 0 {
+		return "", errors.New("发布版中没有可用的安装包地址")
+	}
+
+	var (
+		fails   []string
+		lastErr error
+	)
+	for _, art := range probeOrder(ctx, candidates) {
+		path, err := downloadWithRetry(ctx, downloadRequest{
+			url:      art.DownloadURL,
+			expected: art.Size,
+			suffix:   ".zip",
+			stage:    stageDownloading,
+		}, report)
+		if err == nil {
+			return path, nil
+		}
+		lastErr = err
+		// ctx 已结束（取消或超时）时换源没有意义，直接返回。
+		if ctx.Err() != nil {
+			return "", err
+		}
+		fails = append(fails, fmt.Sprintf("%s：%v", urlHost(art.DownloadURL), err))
+	}
+
+	if len(fails) == 1 {
+		// 只有一个候选，保持原有错误文案不变。
+		return "", lastErr
+	}
+	return "", fmt.Errorf("所有下载地址均失败（%s）", strings.Join(fails, "；"))
+}
+
+// probeOrder 并发探测所有候选，返回按可达性重排后的列表：通过的在前，失败的在后。
+// 并发是为了把总耗时封顶在单次 probeTimeout，而不是候选数 × probeTimeout。
+// 一个都没通过时按原顺序返回——探测失败可能只是对方不接受 HEAD，
+// 不足以断定下载一定失败，因此探测只用来排序，不用来淘汰。
+func probeOrder(ctx context.Context, candidates []artifact) []artifact {
+	if len(candidates) < 2 {
+		return candidates // 只有一个候选，探测没有意义
+	}
+
+	// 每个 goroutine 只写自己那一位，无需加锁。
+	reachable := make([]bool, len(candidates))
+	var wg sync.WaitGroup
+	for i := range candidates {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reachable[i] = probeCandidate(ctx, candidates[i].DownloadURL)
+		}()
+	}
+	wg.Wait()
+
+	ordered := make([]artifact, 0, len(candidates))
+	for i := range candidates {
+		if reachable[i] {
+			ordered = append(ordered, candidates[i])
+		}
+	}
+	for i := range candidates {
+		if !reachable[i] {
+			ordered = append(ordered, candidates[i])
+		}
+	}
+	return ordered
+}
+
+// probeCandidate 用 HEAD 探测单个直链是否可达。
+// 必须用 HEAD 而不是"只取开头几字节"的 GET：Gitee 的发行版直链忽略 Range 头，
+// 带 Range 的请求会返回 200 并把整个安装包下发，那就等于白下一次。
+func probeCandidate(ctx context.Context, rawURL string) bool {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", "KfuPetUpdate-Updater")
+
+	// 两个源的直链都会 302 到实际存储，需要跟随重定向，因此用默认 client。
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// urlHost 取 URL 的主机名，用于在错误信息里指明是哪个源失败。
+func urlHost(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return rawURL
 }
 
 // downloadWithRetry 按重试策略下载一次请求，返回落地的临时文件路径。
