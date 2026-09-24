@@ -91,7 +91,8 @@ func showRepairIncomplete(w fyne.Window, p repairPlan) {
 }
 
 // buildRepairDoneView 展示修复结果：列出实际补回的东西，再问是否启动。
-func buildRepairDoneView(installDir, version string, done []string, onLaunch, onQuit func()) fyne.CanvasObject {
+// warnings 是本次被降级为警告的问题（如快捷方式没能重建），与"已处理"分开展示。
+func buildRepairDoneView(installDir, version string, done, warnings []string, onLaunch, onQuit func()) fyne.CanvasObject {
 	title := canvas.NewText("修复完成", theme.Color(theme.ColorNameForeground))
 	title.TextSize = 24
 	title.TextStyle = fyne.TextStyle{Bold: true}
@@ -112,6 +113,9 @@ func buildRepairDoneView(installDir, version string, done []string, onLaunch, on
 		for _, line := range done {
 			items = append(items, container.NewCenter(smallText("· "+line)))
 		}
+	}
+	for _, line := range warnings {
+		items = append(items, container.NewCenter(warnLabel(line)))
 	}
 	items = append(items,
 		container.NewCenter(smallText("安装位置："+installDir)),

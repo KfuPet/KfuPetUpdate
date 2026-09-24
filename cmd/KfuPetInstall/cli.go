@@ -122,11 +122,17 @@ func runSilentUninstall(c command) error {
 	// 交棒过来的场景要等旧进程退出，否则安装目录里的文件仍被占用。
 	waitForProcesses(c.WaitPIDs)
 
-	if err := uninstallKfuPet(installDir, uninstallOptions{KeepUserData: !c.PurgeData}); err != nil {
+	warnings, err := uninstallKfuPet(installDir, uninstallOptions{KeepUserData: !c.PurgeData})
+	if err != nil {
 		return err
 	}
 	if c.Notify {
-		winapi.NotifyInfo("KfuPet 卸载完成", "KfuPet 已卸载。")
+		// 降级为警告的问题（如快捷方式没删掉）一并告知，别让用户以为清理得很干净。
+		msg := "KfuPet 已卸载。"
+		if len(warnings) > 0 {
+			msg += "\n\n" + strings.Join(warnings, "\n")
+		}
+		winapi.NotifyInfo("KfuPet 卸载完成", msg)
 	}
 	return nil
 }

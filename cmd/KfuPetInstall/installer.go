@@ -277,6 +277,7 @@ func downloadEnvInstaller(ctx context.Context, report progressFunc) (string, err
 type installResult struct {
 	state      installState // 安装后的状态
 	envSkipped bool         // 运行环境未能自动装好（下载地址均失败），需引导用户手动安装
+	warnings   []string     // 降级处理的问题（如快捷方式重试后仍建不出来），供界面提示
 }
 
 // installKfuPet 把发布版安装到 installDir（升级走同一套流程）：
@@ -300,6 +301,8 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	// 运行环境排在最前：装好 KfuPet 才跑得起来。
 	// 候选地址都拿不到时只记录待办、不阻断主流程，安装结束后由界面引导用户手动安装。
 	envSkipped := false
+	// 降级处理的提示：只影响界面最后多一句说明，不参与成功与否的判定。
+	var warnings []string
 	if opts.InstallEnv {
 		if err := ensureDesktopRuntime(ctx, report); err != nil {
 			envSkipped = true
@@ -347,8 +350,10 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 
 	if opts.wantsShortcuts() {
 		reportStage(report, stageShortcuts)
+		// 快捷方式只是入口，建不出来不影响已经装好的程序本体，也不该把整次安装判为失败：
+		// createShortcuts 内部已重试过，仍失败就记一条提示继续装下去（可事后用「修复」补）。
 		if err := createShortcuts(installDir, opts); err != nil {
-			return installResult{}, err
+			warnings = append(warnings, "快捷方式创建失败："+err.Error()+"。可用主界面的「修复」重试。")
 		}
 	}
 
@@ -367,6 +372,7 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	return installResult{
 		state:      installState{Installed: true, Path: rec.InstallPath, Version: rec.DisplayVersion},
 		envSkipped: envSkipped,
+		warnings:   warnings,
 	}, nil
 }
 

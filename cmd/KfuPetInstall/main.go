@@ -109,6 +109,16 @@ func smallText(s string) *canvas.Text {
 	return t
 }
 
+// warnLabel 展示被降级为警告的问题（如快捷方式重试后仍未建出来）：
+// 主题警示色 + 可换行，与正文区分得开，又不像错误页那样中断流程。
+func warnLabel(s string) *widget.Label {
+	l := widget.NewLabel("· " + s)
+	l.Importance = widget.WarningImportance
+	l.Wrapping = fyne.TextWrapWord
+	l.Alignment = fyne.TextAlignCenter
+	return l
+}
+
 // actionButtonSize 是各页面操作按钮的统一尺寸。
 // 按钮宽度默认只由文字决定，单字按钮（如"是""否"）会窄得不好点，故统一给定尺寸。
 var actionButtonSize = fyne.NewSize(100, 40)
@@ -199,6 +209,7 @@ type appState struct {
 	installErr error           // 安装/升级/修复失败原因
 	waitKfuPet bool            // 升级是否由桌宠拉起：决定升级步骤清单是否含「等待退出」
 	repair     repairPlan      // 本次修复的体检结论与执行清单
+	warnings   []string        // 本次流程中被降级为警告的问题，结果页据此多提示一句
 }
 
 // uiHandlers 是主界面各操作入口。
@@ -276,7 +287,7 @@ func buildInstallView(s appState, h flowHandlers) fyne.CanvasObject {
 	case phaseOptions:
 		return buildOptionsPage(s, h)
 	case phaseDone:
-		return buildDoneView("安装完成", s.st.Version, s.targetDir, h.launch, h.quit)
+		return buildDoneView("安装完成", s.st.Version, s.targetDir, s.warnings, h.launch, h.quit)
 	case phaseFailed:
 		return buildInstallFailedView("安装失败", s.installErr, s.targetDir, h.retry, h.backToMain)
 	default:
@@ -471,7 +482,8 @@ func stageNames(stages []installStage) []string {
 
 // buildDoneView 展示安装/升级结果，并询问是否立即启动 KfuPet。
 // 两个选项都会退出 updater：流程已经走完，没有留在界面上的必要。
-func buildDoneView(doneTitle, version, installDir string, onLaunch, onQuit func()) fyne.CanvasObject {
+// warnings 是本次被降级为警告的问题（如快捷方式没建成），列在版本号下方。
+func buildDoneView(doneTitle, version, installDir string, warnings []string, onLaunch, onQuit func()) fyne.CanvasObject {
 	title := canvas.NewText(doneTitle, theme.Color(theme.ColorNameForeground))
 	title.TextSize = 24
 	title.TextStyle = fyne.TextStyle{Bold: true}
@@ -484,11 +496,16 @@ func buildDoneView(doneTitle, version, installDir string, onLaunch, onQuit func(
 	question := widget.NewLabel("是否立即启动 KfuPet？")
 	question.Alignment = fyne.TextAlignCenter
 
-	content := container.NewVBox(
+	items := []fyne.CanvasObject{
 		layout.NewSpacer(),
 		container.NewCenter(container.NewGridWrap(fyne.NewSize(72, 72), uifx.NewResultMark(true))),
 		container.NewCenter(title),
 		container.NewCenter(smallText(versionText)),
+	}
+	for _, line := range warnings {
+		items = append(items, container.NewCenter(warnLabel(line)))
+	}
+	items = append(items,
 		container.NewCenter(smallText("安装位置："+installDir)),
 		container.NewCenter(question),
 		container.NewCenter(container.NewHBox(
@@ -497,8 +514,9 @@ func buildDoneView(doneTitle, version, installDir string, onLaunch, onQuit func(
 		)),
 		layout.NewSpacer(),
 	)
+
 	// 彩带层盖在内容之上，流程成功时炸开一次庆祝。
-	return container.NewStack(content, uifx.NewConfetti())
+	return container.NewStack(container.NewVBox(items...), uifx.NewConfetti())
 }
 
 // buildInstallFailedView 展示流程失败原因与重试、返回入口；安装与升级共用。
@@ -834,7 +852,7 @@ func runGUI(cmd command) {
 					return
 				}
 				// 手动升级：同安装一样问一句是否立即启动。
-				setContent(buildDoneView("升级完成", state.st.Version, upgradeDir,
+				setContent(buildDoneView("升级完成", state.st.Version, upgradeDir, state.warnings,
 					func() {
 						if err := launchKfuPet(upgradeDir); err != nil {
 							dialog.ShowError(err, w)
@@ -852,6 +870,7 @@ func runGUI(cmd command) {
 			}
 			if state.phase == phaseRepairDone {
 				setContent(buildRepairDoneView(state.st.Path, state.st.Version, state.repair.summary(),
+					state.warnings,
 					func() {
 						if err := launchKfuPet(state.st.Path); err != nil {
 							dialog.ShowError(err, w)
@@ -1023,6 +1042,7 @@ func runGUI(cmd command) {
 
 		state.phase = phaseRunning
 		state.installErr = nil
+		state.warnings = nil
 		// 进度起点：要先装运行环境就从它开始；离线安装跳过下载，从校验阶段起步。
 		firstStage := stageDownloading
 		switch {
@@ -1056,6 +1076,7 @@ func runGUI(cmd command) {
 				} else {
 					state.phase = phaseDone
 					state.st = res.state
+					state.warnings = res.warnings
 				}
 				installing = nil
 				render()
@@ -1077,6 +1098,8 @@ func runGUI(cmd command) {
 		state.waitKfuPet = len(cmd.WaitPIDs) > 0
 		state.phase = phaseUpgrading
 		state.installErr = nil
+		// 升级不建快捷方式，正常不会有警告；清一下是为了不把上一轮流程的提示带过来。
+		state.warnings = nil
 		state.progress = installProgress{Stage: upgradeStages(state.waitKfuPet)[0]}
 		installing = nil // 强制重建进行中页面（步骤清单与安装不同）
 		render()
@@ -1175,6 +1198,7 @@ func runGUI(cmd command) {
 		state.repair = plan
 		state.phase = phaseRepairing
 		state.installErr = nil
+		state.warnings = nil
 		state.progress = installProgress{Stage: repairStagesFor(plan.needsDownload())[0]}
 		installing = nil // 强制重建进行中页面（步骤清单按是否需要下载而定）
 		render()
@@ -1204,6 +1228,7 @@ func runGUI(cmd command) {
 				// 重新检测：修复可能改过版本号，主界面要如实反映现状。
 				state.repair = res.plan
 				state.st = detectInstallState()
+				state.warnings = res.warnings
 				state.phase = phaseRepairDone
 				render()
 			})
@@ -1246,7 +1271,7 @@ func runGUI(cmd command) {
 		modal.Show()
 
 		go func() {
-			err := uninstallKfuPet(installDir, uninstallOptions{KeepUserData: keepUserData})
+			warnings, err := uninstallKfuPet(installDir, uninstallOptions{KeepUserData: keepUserData})
 
 			fyne.Do(func() {
 				modal.Hide()
@@ -1257,7 +1282,12 @@ func runGUI(cmd command) {
 					dialog.ShowError(err, w)
 					return
 				}
-				dialog.ShowInformation("卸载完成", "KfuPet 已卸载。", w)
+				// 降级为警告的问题（如快捷方式没删掉）一并说明，别让用户以为清理得很干净。
+				msg := "KfuPet 已卸载。"
+				if len(warnings) > 0 {
+					msg += "\n\n" + strings.Join(warnings, "\n")
+				}
+				dialog.ShowInformation("卸载完成", msg, w)
 			})
 		}()
 	}

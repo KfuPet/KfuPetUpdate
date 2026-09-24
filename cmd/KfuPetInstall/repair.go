@@ -282,7 +282,8 @@ func isFileIntact(path, wantSHA256 string) bool {
 
 // repairResult 是一次修复的产物。
 type repairResult struct {
-	plan repairPlan // 实际执行过的修复计划
+	plan     repairPlan // 实际执行过的修复计划
+	warnings []string   // 降级处理的问题（如快捷方式重试后仍重建不出来），供界面提示
 }
 
 // repairKfuPet 执行体检结论：缺什么补什么。
@@ -297,7 +298,9 @@ func repairKfuPet(ctx context.Context, p repairPlan, report progressFunc) (repai
 	}
 
 	reportStage(report, stageRepairLocal)
-	if err := repairLocalParts(p); err != nil {
+	warnings, err := repairLocalParts(&p)
+	res.warnings = warnings
+	if err != nil {
 		return res, err
 	}
 	res.plan = p
@@ -354,17 +357,22 @@ func repairCoreFiles(ctx context.Context, p *repairPlan, report progressFunc) er
 	return nil
 }
 
-// repairLocalParts 补回常驻副本、快捷方式与安装信息。
-func repairLocalParts(p repairPlan) error {
+// repairLocalParts 补回常驻副本、快捷方式与安装信息，返回被降级为警告的问题。
+// 快捷方式重建失败不该连累安装信息——后者才是修复的主项，因此重试后仍失败时
+// 记一条警告继续；同时把失败的落点从 p.shortcuts 里摘掉，完成页才不会宣称"已重建"。
+func repairLocalParts(p *repairPlan) ([]string, error) {
+	var warnings []string
+
 	if p.updater {
 		if err := copySelf(filepath.Join(p.installDir, updaterName)); err != nil {
-			return fmt.Errorf("放置更新程序失败：%w", err)
+			return warnings, fmt.Errorf("放置更新程序失败：%w", err)
 		}
 	}
 
 	if len(p.shortcuts) > 0 {
 		if err := createShortcutsAt(p.installDir, p.shortcuts); err != nil {
-			return err
+			warnings = append(warnings, "快捷方式重建失败："+err.Error()+"。")
+			p.shortcuts = nil
 		}
 	}
 
@@ -372,14 +380,14 @@ func repairLocalParts(p repairPlan) error {
 		// 与安装流程同一顺序：先写卸载入口，再写安装记录。后者是"已安装"的
 		// 唯一依据，放最后写，前面的失败就不会留下"记录在、但安装未完成"的状态。
 		if err := winreg.WriteUninstallEntry(uninstallEntryFor(p.installDir, p.version)); err != nil {
-			return fmt.Errorf("写入卸载入口失败：%w", err)
+			return warnings, fmt.Errorf("写入卸载入口失败：%w", err)
 		}
 		rec := winreg.InstallRecord{InstallPath: p.installDir, DisplayVersion: p.version}
 		if err := winreg.WriteInstallRecord(rec); err != nil {
-			return fmt.Errorf("写入安装信息失败：%w", err)
+			return warnings, fmt.Errorf("写入安装信息失败：%w", err)
 		}
 	}
-	return nil
+	return warnings, nil
 }
 
 // replaceFile 用 src 的内容覆盖 dst。

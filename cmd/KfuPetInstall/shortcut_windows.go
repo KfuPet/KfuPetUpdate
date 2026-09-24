@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"kfupet-installer/internal/winapi"
 )
@@ -40,6 +41,30 @@ var installShortcutTargets = []shortcutTarget{commonDesktop, commonStartMenu}
 var allShortcutTargets = []shortcutTarget{
 	commonDesktop, commonStartMenu,
 	{folder: "Desktop"}, {folder: "Programs"},
+}
+
+// 快捷方式操作的重试策略：首次失败后再重试 2 次。
+// 创建与删除都借 PowerShell 调 WScript.Shell，偶发失败（COM 组件正忙、
+// 杀软瞬时拦截）重试一次往往就过去了；整条流程重试的代价却高得多
+// （安装要重新下载 70 MB），因此就在这里就地重试。
+const (
+	shortcutAttempts   = 3                      // 最多尝试次数（含首次）
+	shortcutRetryDelay = 500 * time.Millisecond // 两次尝试之间的等待
+)
+
+// withShortcutRetry 执行一次快捷方式操作，失败后按上面的策略重试；
+// 仍失败时返回最后一次的错误。
+func withShortcutRetry(op func() error) error {
+	var err error
+	for attempt := 1; attempt <= shortcutAttempts; attempt++ {
+		if err = op(); err == nil {
+			return nil
+		}
+		if attempt < shortcutAttempts {
+			time.Sleep(shortcutRetryDelay)
+		}
+	}
+	return err
 }
 
 // runPowerShell 以隐藏窗口的方式执行一段 PowerShell 脚本。
@@ -88,6 +113,7 @@ func createShortcuts(installDir string, opts installOptions) error {
 
 // createShortcutsAt 在指定落点上创建（或覆盖）KfuPet 快捷方式。
 // 借系统自带的 WScript.Shell 写 .lnk，避免自行实现 .lnk 的二进制格式。
+// 失败按 withShortcutRetry 重试，仍失败才返回错误。
 func createShortcutsAt(installDir string, targets []shortcutTarget) error {
 	if len(targets) == 0 {
 		return nil
@@ -108,7 +134,9 @@ func createShortcutsAt(installDir string, targets []shortcutTarget) error {
 		"KFUPET_TARGET=" + filepath.Join(installDir, executableName),
 		"KFUPET_WORKDIR=" + installDir,
 	}
-	if err := runPowerShell(script.String(), env); err != nil {
+	if err := withShortcutRetry(func() error {
+		return runPowerShell(script.String(), env)
+	}); err != nil {
 		return fmt.Errorf("创建快捷方式失败：%w", err)
 	}
 	return nil
@@ -167,7 +195,7 @@ func shortcutStates(installDir string) (map[string]shortcutState, error) {
 }
 
 // removeShortcuts 删除安装时可能创建过的快捷方式（公共与当前用户两处）。
-// 快捷方式本就不存在不算错误。
+// 快捷方式本就不存在不算错误；失败按 withShortcutRetry 重试，仍失败才返回错误。
 func removeShortcuts() error {
 	var script strings.Builder
 	script.WriteString("$ErrorActionPreference = 'Stop'\n")
@@ -180,7 +208,9 @@ func removeShortcuts() error {
 		script.WriteString("}\n")
 	}
 
-	if err := runPowerShell(script.String(), nil); err != nil {
+	if err := withShortcutRetry(func() error {
+		return runPowerShell(script.String(), nil)
+	}); err != nil {
 		return fmt.Errorf("删除快捷方式失败：%w", err)
 	}
 	return nil
