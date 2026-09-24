@@ -55,7 +55,8 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 ### 发布清单生成
 
 `gen-manifest.ps1` 生成 `KfuPet-manifest.json`——压缩包 sha256（安装时校验安装包用）+ 随包发布的根级文件哈希（供后续的「修复」功能做逐文件校验）；`Characters` 等子目录不收录。
-生成时会逐文件核对目录与压缩包一致，先打包后又改目录会直接报错、不产出清单：
+
+**压缩包不存在时会自动按目录内容打包**（zip 根下直接放文件、不套顶层目录），省去手工打包这一步；已存在的包一律不动，再逐文件核对目录与压缩包是否一致，先打包后又改目录会直接报错、不产出清单：
 
 ```powershell
 # -Version 填本次发布的 tag（KfuPet 仓库打的那个，如 v0.0.10；v 前缀可带可不带）
@@ -63,6 +64,8 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 ```
 
 清单默认输出到 zip 同目录，须与 zip 一起上传到 GitHub / Gitee 的同一个 Release。
+
+改动目录后要重新打包时，**先删掉旧的 zip 再跑**：脚本不覆盖已存在的包（它可能已经发出去了，静默覆盖会让清单里的 sha256 与用户手上的包对不上）。
 
 ### 安装流程
 
@@ -155,7 +158,7 @@ KfuPet 侧须读同一处（见「卸载流程」）。
 
 - `build.ps1`：一键构建脚本（按需重新生成 syso → 打包 exe，`-Run` 可打包后立即启动）；**须保持 UTF-8 with BOM 编码**，否则 PowerShell 5.1 按 GBK 解析会导致中文报错
 - `test-upgrade.bat`：本地测试升级用（把 KfuPet 的 zip 放在同目录，解压到默认安装目录、放常驻副本、建公共桌面/开始菜单快捷方式并写入机器级安装记录，使主界面出现「升级」）；**内容须保持纯 ASCII**，cmd 解析含多字节字符的批处理会错位，中文会写坏脚本
-- `gen-manifest.ps1`：发布清单生成脚本（zip sha256 + 随包发布的根级文件哈希，生成时核对目录与 zip 逐文件一致，不一致即报错）；**须保持 UTF-8 with BOM 编码**
+- `gen-manifest.ps1`：发布清单生成脚本（zip sha256 + 随包发布的根级文件哈希；zip 不存在时按目录自动打包，已存在的包不覆盖，随后核对目录与 zip 逐文件一致，不一致即报错）；**须保持 UTF-8 with BOM 编码**
 - `cmd/KfuPetInstall/`：主程序（`package main`），唯一的编译入口；资源与图标必须与包放在同一目录，才能被链入 exe
   - `main.go`：界面层（启动闪屏、主界面、安装向导各页面）与界面状态机（安装/升级流程的分流）
   - `update.go`：版本查询逻辑（GitHub 源优先，失败时回退到 Gitee 国内镜像），以及发布版产物（安装包）与哈希清单（`KfuPet-manifest.json`）的解析与挑选
