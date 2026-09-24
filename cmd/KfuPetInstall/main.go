@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"image/color"
 	_ "image/png"
@@ -714,7 +715,40 @@ func buildFailedPanel(title string, failure error, retryLabel string, onRetry fu
 // instanceLockTimeout 是抢单实例锁的最长等待。
 // 交棒时原进程会先放锁，通常毫秒级就能拿到，这个窗口只是覆盖那点空档；
 // 也不能太长——用户重复双击图标时要尽快得到"已在运行"的结论。
+// 结束掉闲着的旧实例后重抢一次时，也用这个时长等它真正退出。
 const instanceLockTimeout = 3 * time.Second
+
+// otherInstanceNames 是本程序可能以之运行的文件名。
+// 分发名是 KfuPetInstall.exe；装进安装目录的常驻副本、以及交棒用的临时副本都叫 KfuPetUpdate.exe。
+var otherInstanceNames = []string{"KfuPetInstall.exe", updaterName}
+
+// acquireInstanceLock 抢单实例锁。同一时刻只允许一个实例改动安装目录：
+// 两个实例同时安装/卸载会争抢同一个安装目录，而且常驻副本正在运行时，
+// 别的实例既替换不了也删不掉安装目录。
+//
+// 拿不到锁且对方闲着时，直接把那个实例结束掉——它就是个开着没干活的窗口
+// （用户手动打开后晾在一边），没有进行中的工作可丢，比"请求它自己退出"省掉一整套协议。
+// 对方正在安装/修复/卸载/升级（见 winapi.MarkBusy）时必须收手：强杀会把安装目录留在半成品状态。
+func acquireInstanceLock() error {
+	if err := winapi.AcquireInstanceLock(instanceLockTimeout); err == nil {
+		return nil
+	}
+	if !winapi.IsOtherInstanceIdle() {
+		return errors.New("KfuPet 更新程序正在安装或修复中，请等它完成后再试")
+	}
+
+	pid := winapi.FindOtherProcessPID(otherInstanceNames)
+	if pid == 0 {
+		// 进程找不到却抢不到锁：可能是句柄残留，交回原来的提示让用户自己处理。
+		return errors.New("另一个 KfuPet 更新程序正在运行，请先关闭它再试")
+	}
+	if err := winapi.KillProcess(pid); err != nil {
+		return fmt.Errorf("结束旧的更新程序失败：%w", err)
+	}
+	// 强杀后映像与它占的资源还要一点时间释放，等它退出再抢锁。
+	winapi.WaitProcessExitTimeout(pid, instanceLockTimeout)
+	return winapi.AcquireInstanceLock(instanceLockTimeout)
+}
 
 func main() {
 	os.Exit(run())
@@ -728,11 +762,19 @@ func run() int {
 
 	// 同一时刻只允许一个实例：两个实例同时安装/卸载会争抢同一个安装目录，
 	// 而且常驻副本正在运行时，别的实例既替换不了也删不掉安装目录。
-	if err := winapi.AcquireInstanceLock(instanceLockTimeout); err != nil {
+	// 占着锁的旧实例若只是个闲着没干活的窗口，会在这里被结束掉（见 acquireInstanceLock）。
+	if err := acquireInstanceLock(); err != nil {
 		winapi.NotifyError("KfuPet 无法启动", err.Error())
 		return 1
 	}
 	defer winapi.ReleaseInstanceLock()
+	// 带活来的实例（升级、静默卸载）从进来到退出都在干活，先声明出去：
+	// 否则别的实例会把它当成"闲着的窗口"结束掉，正在等它的桌宠就再也等不到结果。
+	// （普通打开的界面这一步不声明，界面开着不动就一直是"闲着"。）
+	if cmd.Action != "" {
+		winapi.MarkBusy()
+		defer winapi.MarkIdle()
+	}
 	// 若自身是交棒过来的临时副本，退出后把自己的目录也删掉。
 	defer removeTempDirLater()
 
@@ -1043,6 +1085,8 @@ func runGUI(cmd command) {
 		state.phase = phaseRunning
 		state.installErr = nil
 		state.warnings = nil
+		// 声明"正在干活"：这期间别的实例不许把本进程结束掉。
+		winapi.MarkBusy()
 		// 进度起点：要先装运行环境就从它开始；离线安装跳过下载，从校验阶段起步。
 		firstStage := stageDownloading
 		switch {
@@ -1070,6 +1114,8 @@ func runGUI(cmd command) {
 			})
 
 			fyne.Do(func() {
+				// 流程结束（不论成败）就撤回"正在干活"，回到可以被结束的空闲状态。
+				winapi.MarkIdle()
 				if err != nil {
 					state.phase = phaseFailed
 					state.installErr = err
@@ -1100,6 +1146,8 @@ func runGUI(cmd command) {
 		state.installErr = nil
 		// 升级不建快捷方式，正常不会有警告；清一下是为了不把上一轮流程的提示带过来。
 		state.warnings = nil
+		// 声明"正在干活"：升级期间别的实例不许把本进程结束掉。
+		winapi.MarkBusy()
 		state.progress = installProgress{Stage: upgradeStages(state.waitKfuPet)[0]}
 		installing = nil // 强制重建进行中页面（步骤清单与安装不同）
 		render()
@@ -1119,6 +1167,8 @@ func runGUI(cmd command) {
 			})
 
 			fyne.Do(func() {
+				// 流程结束（不论成败）就撤回"正在干活"。
+				winapi.MarkIdle()
 				installing = nil
 				switch {
 				case err != nil:
@@ -1199,6 +1249,8 @@ func runGUI(cmd command) {
 		state.phase = phaseRepairing
 		state.installErr = nil
 		state.warnings = nil
+		// 声明"正在干活"：修复期间别的实例不许把本进程结束掉。
+		winapi.MarkBusy()
 		state.progress = installProgress{Stage: repairStagesFor(plan.needsDownload())[0]}
 		installing = nil // 强制重建进行中页面（步骤清单按是否需要下载而定）
 		render()
@@ -1218,6 +1270,8 @@ func runGUI(cmd command) {
 			})
 
 			fyne.Do(func() {
+				// 流程结束（不论成败）就撤回"正在干活"。
+				winapi.MarkIdle()
 				installing = nil
 				if err != nil {
 					state.phase = phaseRepairFailed
@@ -1261,6 +1315,8 @@ func runGUI(cmd command) {
 		}
 
 		// 卸载期间用模态框挡住主界面，避免重复触发。
+		// 同时声明"正在干活"：删到一半被别的实例结束掉，会留下卸了一半的目录。
+		winapi.MarkBusy()
 		spinner := uifx.NewSpinner()
 		busyLabel := widget.NewLabel("正在卸载 KfuPet")
 		modal := dialog.NewCustomWithoutButtons("正在卸载",
@@ -1274,6 +1330,8 @@ func runGUI(cmd command) {
 			warnings, err := uninstallKfuPet(installDir, uninstallOptions{KeepUserData: keepUserData})
 
 			fyne.Do(func() {
+				// 流程结束（不论成败）就撤回"正在干活"。
+				winapi.MarkIdle()
 				modal.Hide()
 				// 重新检测：成功则主界面回到"仅安装"，失败也如实反映磁盘现状。
 				state.st = detectInstallState()

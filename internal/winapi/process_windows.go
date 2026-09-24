@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -62,7 +64,9 @@ func WaitProcessExitTimeout(pid int, timeout time.Duration) bool {
 }
 
 // KillProcess 强制终止指定进程（TerminateProcess）。
-// 只在用户明确同意后才可调用：强杀不给对方保存状态的机会。
+// 有两处使用：用户明确同意后强杀卡住的 KfuPet；以及结束一个闲着的旧更新程序实例
+// （那种实例没有进行中的工作可丢，见调用方的判断）。
+// 绝不能对正在安装/修复的实例调用：强杀会把安装目录留在装了一半的状态。
 func KillProcess(pid int) error {
 	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
 	if err != nil {
@@ -71,6 +75,34 @@ func KillProcess(pid int) error {
 	defer windows.CloseHandle(h)
 
 	return windows.TerminateProcess(h, 1)
+}
+
+// FindOtherProcessPID 找出另一个以给定文件名运行的进程，返回它的 PID；找不到返回 0。
+// 用进程快照按 exe 名比对：本程序只有两种名字（分发名与安装目录内的常驻副本），
+// 撞名的可能性可以忽略。names 由调用方给出，避免这里再抄一份文件名。
+func FindOtherProcessPID(names []string) int {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return 0
+	}
+	defer windows.CloseHandle(snapshot)
+
+	self := uint32(os.Getpid())
+	var entry windows.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+
+	for err := windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
+		if entry.ProcessID == 0 || entry.ProcessID == self {
+			continue
+		}
+		name := windows.UTF16ToString(entry.ExeFile[:])
+		for _, want := range names {
+			if strings.EqualFold(name, want) {
+				return int(entry.ProcessID)
+			}
+		}
+	}
+	return 0
 }
 
 // RemoveTempDirLater 安排在本进程退出后删掉 dir。
