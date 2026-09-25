@@ -4,11 +4,16 @@
     KfuPet 发布清单生成脚本。
 
 .DESCRIPTION
-    生成 KfuPet-manifest.json：压缩包 sha256 + 随包发布的根级文件哈希，
-    供 KfuPetInstall 的「修复」功能做逐文件校验。
+    生成 KfuPet-manifest.json：压缩包 sha256 + 随包发布的根级文件哈希 +
+    本安装器（KfuPetInstall.exe）自身的哈希与版本。
+
+    压缩包哈希供安装时校验安装包，「修复」按根级文件哈希逐文件校验；
+    安装器那一段供安装/升级/修复把用户机上的常驻更新程序（KfuPetUpdate.exe）
+    换成发布版这一份——更新程序没有别的更新通道，只能随 KfuPet 的发布版一起走。
 
     收录范围只有压缩包根目录下的文件（KfuPet.exe / KfuPet.dll 及两个 json）；
     Characters 等子目录属于角色模型内容，用户可自行增删改，不纳入清单。
+    安装器（-Installer）不在压缩包内，是随 Release 单独上传的第二个附件。
 
     生成时会把「目录内容」与「压缩包内容」逐文件核对，两边哈希必须一致，
     否则报错退出——避免先打包、后又改动目录（或拿错包）导致清单与包不匹配。
@@ -30,7 +35,10 @@ param(
     # 发布 tag（可带 v 前缀）；缺省从 zip 文件名里找形如 1.2.3 的版本号
     [string]$Version,
     # 清单输出路径；缺省为 zip 同目录下的 KfuPet-manifest.json
-    [string]$Out
+    [string]$Out,
+    # 本安装器 exe 的路径；缺省取仓库里的 dist/KfuPetInstall.exe。
+    # 它的哈希与版本写进清单的 installer 段，须与 zip 一起上传到同一个 Release。
+    [string]$Installer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,6 +80,32 @@ function New-ReleaseZip {
 
 if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { throw "目录不存在：$Dir" }
 $Dir = (Resolve-Path -LiteralPath $Dir).Path
+
+# 安装器自身的信息：哈希用于判断用户机上的常驻更新程序是否该换成这一份，
+# 版本只用于给用户看的文案（判定一律以哈希为准，不依赖版本号）。
+# 排在自动打包之前：路径不合规时直接报错，不留下一个没用的包。
+if (-not $Installer) { $Installer = Join-Path $PSScriptRoot 'dist/KfuPetInstall.exe' }
+$installerEntry = $null
+if (Test-Path -LiteralPath $Installer -PathType Leaf) {
+    $exePath = (Resolve-Path -LiteralPath $Installer).Path
+    if ($exePath.StartsWith($Dir + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "安装器不能放在 -Dir 之内：$exePath 会被当成随包发布的 KfuPet 文件"
+    }
+    $exe = Get-Item -LiteralPath $exePath
+    # 版本取自 exe 资源（app.rc 的 VERSIONINFO）；取不到就留空，只影响展示文案
+    $exeVer = ''
+    if ($exe.VersionInfo.FileVersion) { $exeVer = $exe.VersionInfo.FileVersion }
+    elseif ($exe.VersionInfo.ProductVersion) { $exeVer = $exe.VersionInfo.ProductVersion }
+    $installerEntry = [pscustomobject]@{
+        name    = $exe.Name
+        sha256  = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        size    = $exe.Length
+        version = $exeVer.Trim().TrimStart('v', 'V')
+    }
+}
+else {
+    Write-Warning "未找到安装器 $Installer，清单不含 installer 段：本次发布不会更新用户机上的常驻更新程序。"
+}
 
 # 压缩包不存在就地打一个，省去手工打包。已存在的包不动：它可能已经发出去了，
 # 悄悄覆盖会让清单里的 sha256 与用户手上的包对不上。
@@ -161,12 +195,13 @@ try {
 finally { $archive.Dispose() }
 
 # 3. 写清单（UTF-8 无 BOM：Go 侧 encoding/json 不认 BOM）
-$manifest = [pscustomobject]@{
+$manifest = [ordered]@{
     version   = $Version
     zipSha256 = $zipSha256
     files     = $entries
 }
-$json = $manifest | ConvertTo-Json -Depth 5
+if ($installerEntry) { $manifest['installer'] = $installerEntry }
+$json = [pscustomobject]$manifest | ConvertTo-Json -Depth 5
 
 if (-not $Out) { $Out = Join-Path (Split-Path -Parent $Zip) 'KfuPet-manifest.json' }
 [IO.File]::WriteAllText($Out, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
@@ -178,4 +213,12 @@ Write-Host ("    收录文件：{0} 个根级文件" -f $entries.Count)
 foreach ($e in $entries) {
     Write-Host ("      {0,9}  {1}  {2}" -f $e.size, $e.sha256, $e.path)
 }
-Write-Host '==> 上传提醒：zip 与 KfuPet-manifest.json 需一起传到 GitHub 和 Gitee 的同一个 Release' -ForegroundColor Yellow
+if ($installerEntry) {
+    Write-Host ("    安装器  ：{0}{1}（sha256 {2}）" -f $installerEntry.name,
+        $(if ($installerEntry.version) { " v" + $installerEntry.version } else { '' }),
+        $installerEntry.sha256)
+}
+
+$uploads = @((Split-Path -Leaf $Zip), 'KfuPet-manifest.json')
+if ($installerEntry) { $uploads += $installerEntry.name }
+Write-Host ("==> 上传提醒：{0} 需一起传到 GitHub 与 Gitee 的同一个 Release" -f ($uploads -join '、')) -ForegroundColor Yellow

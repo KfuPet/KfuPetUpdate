@@ -184,12 +184,22 @@ type fileDigest struct {
 	Size   int64  `json:"size"`
 }
 
-// releaseManifest 是发布版附带的哈希清单：压缩包自身的 sha256，
-// 以及包内根级文件的逐个哈希（后者供「修复」比对）。
+// installerDigest 是清单中随包发布的安装器（本程序自身）的信息。
+// 安装/升级/修复据此判断机上的常驻副本是否该换成发布版这一份。
+type installerDigest struct {
+	Name    string `json:"name"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	Version string `json:"version"`
+}
+
+// releaseManifest 是发布版附带的哈希清单：压缩包自身的 sha256、
+// 包内根级文件的逐个哈希（后者供「修复」比对），以及安装器自身的信息。
 type releaseManifest struct {
-	Version   string       `json:"version"`
-	ZipSHA256 string       `json:"zipSha256"`
-	Files     []fileDigest `json:"files"`
+	Version   string           `json:"version"`
+	ZipSHA256 string           `json:"zipSha256"`
+	Files     []fileDigest     `json:"files"`
+	Installer *installerDigest `json:"installer"`
 }
 
 // manifestCandidates 返回哈希清单的候选直链：选定源在前，镜像源按源顺序追加。

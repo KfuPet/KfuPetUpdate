@@ -452,9 +452,9 @@ func (v *installingView) update(p installProgress) {
 	v.stageBox.Refresh() // 阶段文案长度变化后重新居中
 	v.steps.SetCurrent(stageIndex(v.stages, p.Stage))
 
-	// 运行环境与安装包的下载都带字节进度，用确定进度条展示；
+	// 运行环境、安装包与更新程序的下载都带字节进度，用确定进度条展示；
 	// 其余阶段无法量化，用不确定进度条表示"正在进行"。
-	if (p.Stage == stageDownloading || p.Stage == stageEnvDownloading) && p.Total > 0 {
+	if (p.Stage == stageDownloading || p.Stage == stageEnvDownloading || p.Stage == stageUpdatingUpdater) && p.Total > 0 {
 		v.indet.Stop()
 		v.indet.Hide()
 		v.deter.Show()
@@ -1251,7 +1251,7 @@ func runGUI(cmd command) {
 		state.warnings = nil
 		// 声明"正在干活"：修复期间别的实例不许把本进程结束掉。
 		winapi.MarkBusy()
-		state.progress = installProgress{Stage: repairStagesFor(plan.needsDownload())[0]}
+		state.progress = installProgress{Stage: repairStagesFor(plan.needsCoreDownload(), plan.updater)[0]}
 		installing = nil // 强制重建进行中页面（步骤清单按是否需要下载而定）
 		render()
 

@@ -28,15 +28,17 @@ var coreFileNames = []string{
 }
 
 // repairStagesFor 返回本次修复的步骤清单。
-// 只修本地项时没有下载/校验/解压这几步，步骤清单也就不该把它们列出来。
-func repairStagesFor(needDownload bool) []installStage {
-	if !needDownload {
-		return []installStage{stageRepairChecking, stageRepairLocal}
+// 只修本地项时没有下载/校验/解压这几步，步骤清单也就不该把它们列出来；
+// 补回或更新常驻副本只是放置一个 exe、不需要解压，单独列一步。
+func repairStagesFor(needCoreDownload, updater bool) []installStage {
+	stages := []installStage{stageRepairChecking}
+	if needCoreDownload {
+		stages = append(stages, stageDownloading, stageVerifying, stageExtracting, stageRepairCore)
 	}
-	return []installStage{
-		stageRepairChecking, stageDownloading, stageVerifying,
-		stageExtracting, stageRepairCore, stageRepairLocal,
+	if updater {
+		stages = append(stages, stageUpdatingUpdater)
 	}
+	return append(stages, stageRepairLocal)
 }
 
 // repairPlan 是一次体检的结论，同时也是本次修复要做的事。
@@ -45,10 +47,11 @@ type repairPlan struct {
 	localVer   string // 注册表里记录的本地版本（可能为空）
 	version    string // 修复完成后应写入注册表的版本号
 
-	coreFiles []string         // 需按发布包覆盖的根级文件（缺失或哈希不符）
-	updater   bool             // 常驻副本需重放
-	shortcuts []shortcutTarget // 需重建的快捷方式
-	registry  []string         // 需重写的注册表项（展示名）
+	coreFiles  []string         // 需按发布包覆盖的根级文件（缺失或哈希不符）
+	updater    bool             // 常驻副本需补回或更新
+	updaterPkg bool             // 常驻副本要从发布包里取（需下载），而不是从自身复制
+	shortcuts  []shortcutTarget // 需重建的快捷方式
+	registry   []string         // 需重写的注册表项（展示名）
 
 	// 以下几项只用于体检报告，不参与执行。
 	coreVerified   bool     // 是否按哈希清单逐个校验过本体文件
@@ -64,13 +67,16 @@ func (p repairPlan) needsWork() bool {
 	return p.needsDownload() || p.updater || len(p.shortcuts) > 0 || len(p.registry) > 0
 }
 
-// needsDownload 表示本次修复要下载安装包——只有本体文件需要覆盖时才下载。
-func (p repairPlan) needsDownload() bool { return len(p.coreFiles) > 0 }
+// needsCoreDownload 表示本次修复要下载 KfuPet 安装包——只有本体文件需要覆盖时才下载。
+func (p repairPlan) needsCoreDownload() bool { return len(p.coreFiles) > 0 }
+
+// needsDownload 表示本次修复需要联网下载（安装包或安装器）。
+func (p repairPlan) needsDownload() bool { return p.needsCoreDownload() || p.updaterPkg }
 
 // needsKfuPetClosed 表示本次修复要覆盖 KfuPet 自己的程序文件，因此它必须先退出——
 // 正在运行的 exe/dll 映像替换不掉，改名会失败。
 // 重放常驻副本、重建快捷方式、改注册表都不涉及这些文件，不该因此拦下用户。
-func (p repairPlan) needsKfuPetClosed() bool { return p.needsDownload() }
+func (p repairPlan) needsKfuPetClosed() bool { return p.needsCoreDownload() }
 
 // summary 列出本次修复要做（或已做）的事，供界面展示。
 func (p repairPlan) summary() []string {
@@ -80,7 +86,11 @@ func (p repairPlan) summary() []string {
 			len(p.coreFiles), strings.Join(p.coreFiles, "、")))
 	}
 	if p.updater {
-		lines = append(lines, "补回常驻更新程序 "+updaterName)
+		if p.updaterPkg {
+			lines = append(lines, updaterUpdateText(p.man))
+		} else {
+			lines = append(lines, "补回常驻更新程序 "+updaterName)
+		}
 	}
 	for _, t := range p.shortcuts {
 		lines = append(lines, "重建"+t.label)
@@ -92,6 +102,19 @@ func (p repairPlan) summary() []string {
 		lines = append(lines, fmt.Sprintf("版本号 %s → %s", versionText(p.localVer), versionText(p.version)))
 	}
 	return lines
+}
+
+// updaterUpdateText 描述"常驻更新程序将换成发布版这一份"。
+// 本机版本读得到时把两个版本都列出来——这句话是用户唯一能看到的"更新程序也有版本"的地方。
+func updaterUpdateText(man *releaseManifest) string {
+	if man == nil || man.Installer == nil || strings.TrimSpace(man.Installer.Version) == "" {
+		return "更新常驻更新程序 " + updaterName
+	}
+	if own := updaterOwnVersion(); own != "" {
+		return fmt.Sprintf("更新常驻更新程序 %s → %s",
+			versionText(updaterVersionText(own)), versionText(man.Installer.Version))
+	}
+	return "更新常驻更新程序到 " + versionText(man.Installer.Version)
 }
 
 // versionChanged 表示修复会改变记录的版本号（修复按线上最新版进行）。
@@ -110,14 +133,19 @@ func versionText(v string) string {
 
 // downloadSize 返回本次修复预估要下载的字节数；未知时返回 0。
 func (p repairPlan) downloadSize() int64 {
-	if !p.needsDownload() || p.rel == nil {
+	if p.rel == nil {
 		return 0
 	}
-	art, err := p.rel.artifactFor()
-	if err != nil {
-		return 0
+	var total int64
+	if p.needsCoreDownload() {
+		if art, err := p.rel.artifactFor(); err == nil {
+			total += art.Size
+		}
 	}
-	return art.Size
+	if p.updaterPkg && p.man != nil && p.man.Installer != nil {
+		total += p.man.Installer.Size
+	}
+	return total
 }
 
 // inspectInstall 体检：列出安装目录与安装信息里需要修复的项。
@@ -133,13 +161,13 @@ func inspectInstall(ctx context.Context, checker *updateChecker, installDir, loc
 	}
 	reportStage(report, stageRepairChecking)
 
-	// 这两项不依赖网络，任何情况下都能修。
-	inspectUpdater(&p)
+	// 快捷方式不依赖网络，任何情况下都能修。
 	inspectShortcuts(&p)
 
-	// 版本号要在查注册表之前定下来：注册表里的版本号也跟着修复走，
-	// 否则桌宠那边会一直提示"有新版本"。
+	// 常驻副本要以发布版附带的安装器为准，因此排在取清单之后；
+	// 版本号也得在查注册表之前定下来（注册表跟着修复走），否则桌宠会一直提示"有新版本"。
 	man := fetchRepairManifest(ctx, checker, &p)
+	inspectUpdater(&p, man)
 	inspectRegistry(&p)
 
 	if man != nil {
@@ -188,9 +216,11 @@ func fetchRepairManifest(ctx context.Context, checker *updateChecker, p *repairP
 }
 
 // inspectUpdater 检查安装目录内的常驻副本。
-// 只比大小：它应当与当前运行的这个程序逐字节相同（就是 copySelf 复制出来的），
-// 大小不符说明是别的版本、或被杀软截断（0 字节），两种都要重放。
-func inspectUpdater(p *repairPlan) {
+// 发布版带了安装器信息时以它为准：常驻副本本该就是发布版那一份，哈希不符就换成它
+// （换的是发布版，不是"运行中的这个 exe"，因此不会把更新的副本降级）。
+// 拿不到清单时（无网、旧发布版没带）只能看存在性：缺了或明显是 0 字节的坏文件补回，
+// 其余情况不动——没有可信来源时硬写，可能把新版本写回旧版本。
+func inspectUpdater(p *repairPlan, man *releaseManifest) {
 	path := filepath.Join(p.installDir, updaterName)
 	self, err := selfPath()
 	if err != nil {
@@ -199,12 +229,17 @@ func inspectUpdater(p *repairPlan) {
 	if samePath(path, self) {
 		return // 本程序就运行在这个位置，它显然在
 	}
-	selfInfo, err := os.Stat(self)
-	if err != nil {
+	if man != nil && man.Installer != nil && man.Installer.SHA256 != "" {
+		if isFileIntact(path, man.Installer.SHA256) {
+			return
+		}
+		// 缺了或不是发布版那一份就补上；补的时候要不要下载，取决于手上这个安装器
+		// 是不是发布版那一份（不是才需要下载），报告里的"要下载多少"据此如实填写。
+		p.updater = true
+		p.updaterPkg = updaterPackageNeeded(man)
 		return
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() || info.Size() != selfInfo.Size() {
+	if info, err := os.Stat(path); err != nil || info.IsDir() || info.Size() == 0 {
 		p.updater = true
 	}
 }
@@ -291,15 +326,27 @@ type repairResult struct {
 func repairKfuPet(ctx context.Context, p repairPlan, report progressFunc) (repairResult, error) {
 	res := repairResult{plan: p}
 
-	if p.needsDownload() {
+	if p.needsCoreDownload() {
 		if err := repairCoreFiles(ctx, &p, report); err != nil {
 			return res, err
 		}
 	}
 
+	// 常驻副本单列一步：它可能要联网换成发布版带的那一份（见 placeUpdater）。
+	var warnings []string
+	if p.updater {
+		warn, err := placeUpdater(ctx, p.rel, p.man, p.installDir, report)
+		if err != nil {
+			return res, err
+		}
+		if warn != "" {
+			warnings = append(warnings, warn)
+		}
+	}
+
 	reportStage(report, stageRepairLocal)
-	warnings, err := repairLocalParts(&p)
-	res.warnings = warnings
+	more, err := repairLocalParts(&p)
+	res.warnings = append(warnings, more...)
 	if err != nil {
 		return res, err
 	}
@@ -319,7 +366,7 @@ func repairCoreFiles(ctx context.Context, p *repairPlan, report progressFunc) er
 		return err
 	}
 
-	path, err := downloadArtifact(ctx, p.rel.artifactsFor(), report)
+	path, err := downloadArtifact(ctx, p.rel.artifactsFor(), kindPackage, report)
 	if err != nil {
 		return err
 	}
@@ -357,17 +404,11 @@ func repairCoreFiles(ctx context.Context, p *repairPlan, report progressFunc) er
 	return nil
 }
 
-// repairLocalParts 补回常驻副本、快捷方式与安装信息，返回被降级为警告的问题。
+// repairLocalParts 重建快捷方式与安装信息，返回被降级为警告的问题。
 // 快捷方式重建失败不该连累安装信息——后者才是修复的主项，因此重试后仍失败时
 // 记一条警告继续；同时把失败的落点从 p.shortcuts 里摘掉，完成页才不会宣称"已重建"。
 func repairLocalParts(p *repairPlan) ([]string, error) {
 	var warnings []string
-
-	if p.updater {
-		if err := copySelf(filepath.Join(p.installDir, updaterName)); err != nil {
-			return warnings, fmt.Errorf("放置更新程序失败：%w", err)
-		}
-	}
 
 	if len(p.shortcuts) > 0 {
 		if err := createShortcutsAt(p.installDir, p.shortcuts); err != nil {

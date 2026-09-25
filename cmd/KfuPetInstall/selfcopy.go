@@ -25,14 +25,20 @@ func copySelf(dst string) error {
 	if err != nil {
 		return err
 	}
-	if samePath(self, dst) {
+	return copyFile(self, dst)
+}
+
+// copyFile 把 src 的内容复制到 dst，覆盖已有内容。
+// 写目标必须是别的文件，否则会撞上"自己占用自己"（运行中的 exe 映像）。
+func copyFile(src, dst string) error {
+	if samePath(src, dst) {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
 
-	in, err := os.Open(self)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}

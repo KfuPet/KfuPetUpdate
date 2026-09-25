@@ -14,8 +14,8 @@ GLFW_ICON ICON "icon/app.ico"
 
 // Windows 资源定义：为 KfuPetInstall.exe 设置「属性 → 详细信息」页内容。
 1 VERSIONINFO
-FILEVERSION     2,0,0,0
-PRODUCTVERSION  2,0,0,0
+FILEVERSION     3,0,0,0
+PRODUCTVERSION  3,0,0,0
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0x0L
 FILEOS          0x40004L  // VOS_NT_WINDOWS32
@@ -29,12 +29,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "KfuPet"
             VALUE "FileDescription",  "KfuPet 安装 / 更新 / 卸载程序"
-            VALUE "FileVersion",      "2.0.0"
+            VALUE "FileVersion",      "3.0.0"
             VALUE "InternalName",     "KfuPetInstall"
             VALUE "LegalCopyright",   "Copyright (C) 2026 KfuPet"
             VALUE "OriginalFilename", "KfuPetInstall.exe"
             VALUE "ProductName",      "KfuPetInstall"
-            VALUE "ProductVersion",   "2.0.0"
+            VALUE "ProductVersion",   "3.0.0"
         END
     END
     BLOCK "VarFileInfo"

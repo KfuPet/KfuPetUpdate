@@ -16,9 +16,9 @@ import (
 )
 
 // newRepairingView 组装修复进行中页面：与安装中页面同构，只是标题与步骤清单不同。
-// 步骤清单按本次是否需要下载安装包决定（见 repairStagesFor）。
+// 步骤清单按本次是否需要下载安装包、是否要补回常驻副本决定（见 repairStagesFor）。
 func newRepairingView(s appState) *installingView {
-	return newInstallingView("KfuPet 修复中", repairStagesFor(s.repair.needsDownload()), s)
+	return newInstallingView("KfuPet 修复中", repairStagesFor(s.repair.needsCoreDownload(), s.repair.updater), s)
 }
 
 // buildRepairCheckingView 组装体检中的全屏页。
@@ -49,9 +49,9 @@ func confirmRepair(w fyne.Window, p repairPlan, onChoice func(start bool)) {
 		lines = append(lines, "· "+line)
 	}
 	if size := p.downloadSize(); size > 0 {
-		lines = append(lines, fmt.Sprintf("需要重新下载安装包（约 %s）。", formatBytes(size)))
+		lines = append(lines, fmt.Sprintf("需要联网下载（约 %s）。", formatBytes(size)))
 	}
-	if p.needsDownload() {
+	if p.needsCoreDownload() {
 		lines = append(lines, "只覆盖有问题的文件，角色模型等个人内容不受影响。")
 	}
 	// 拿不到清单时如实说明"程序文件本次没能校验"，而不是假装一切正常。

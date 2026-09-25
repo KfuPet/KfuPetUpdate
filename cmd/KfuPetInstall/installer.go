@@ -30,14 +30,15 @@ const installTimeout = 30 * time.Minute
 type installStage string
 
 const (
-	stageEnvDownloading installStage = "正在下载运行环境"
-	stageEnvInstalling  installStage = "正在安装运行环境"
-	stageDownloading    installStage = "正在下载安装包"
-	stageVerifying      installStage = "正在校验安装包"
-	stageExtracting     installStage = "正在解压安装包"
-	stageApplying       installStage = "正在安装文件"
-	stageShortcuts      installStage = "正在创建快捷方式"
-	stageRegistering    installStage = "正在写入安装信息"
+	stageEnvDownloading  installStage = "正在下载运行环境"
+	stageEnvInstalling   installStage = "正在安装运行环境"
+	stageDownloading     installStage = "正在下载安装包"
+	stageVerifying       installStage = "正在校验安装包"
+	stageExtracting      installStage = "正在解压安装包"
+	stageApplying        installStage = "正在安装文件"
+	stageUpdatingUpdater installStage = "正在更新更新程序"
+	stageShortcuts       installStage = "正在创建快捷方式"
+	stageRegistering     installStage = "正在写入安装信息"
 )
 
 // installStages 是安装步骤的固定顺序：运行环境排在最前，装好 KfuPet 才能启动。
@@ -45,6 +46,7 @@ const (
 var installStages = []installStage{
 	stageEnvDownloading, stageEnvInstalling,
 	stageDownloading, stageVerifying, stageExtracting, stageApplying,
+	stageUpdatingUpdater,
 	stageShortcuts, stageRegistering,
 }
 
@@ -208,7 +210,7 @@ func resolveInstallerSource(ctx context.Context, rel *releaseInfo, opts installO
 	}
 	// art 只用于校验，固定取选定源的产物（它带 sha256 摘要）；
 	// 下载则按候选列表逐个尝试，可能最终来自镜像源。
-	path, err := downloadArtifact(ctx, rel.artifactsFor(), report)
+	path, err := downloadArtifact(ctx, rel.artifactsFor(), kindPackage, report)
 	if err != nil {
 		return installerSource{}, err
 	}
@@ -260,7 +262,7 @@ func ensureDesktopRuntime(ctx context.Context, report progressFunc) error {
 func downloadEnvInstaller(ctx context.Context, report progressFunc) (string, error) {
 	var fails []string
 	for _, u := range dotnet.DownloadURLs {
-		req := downloadRequest{url: u, suffix: ".exe", stage: stageEnvDownloading}
+		req := downloadRequest{url: u, suffix: ".exe", stage: stageEnvDownloading, label: "运行环境"}
 		path, err := downloadWithRetry(ctx, req, report)
 		if err == nil {
 			return path, nil
@@ -342,10 +344,21 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 		return installResult{}, err
 	}
 
-	// 把自身复制进安装目录常驻：卸载入口与 KfuPet 的「检查更新」都依赖这个
-	// 固定位置，用户删掉当初下载的 updater 也不影响后续卸载与升级。
-	if err := copySelf(filepath.Join(installDir, updaterName)); err != nil {
-		return installResult{}, fmt.Errorf("放置更新程序失败：%w", err)
+	// 放置常驻更新程序：卸载入口与 KfuPet 的「立即更新」都指向这个固定位置，
+	// 用户删掉当初下载的 updater 也不影响后续卸载与升级。发布版带了更新的
+	// 安装器时换成发布版这一份，否则复制自身；失败只降级为警告，
+	// 不因为"顺带更新更新程序"没成而把整次安装判为失败。
+	// 离线安装承诺"不下载"，因此这一步只从自身复制：新版更新程序留给下次在线流程。
+	var updaterMan *releaseManifest
+	if !opts.Offline {
+		updaterMan = src.manifest
+	}
+	warn, err := placeUpdater(ctx, rel, updaterMan, installDir, report)
+	if err != nil {
+		return installResult{}, err
+	}
+	if warn != "" {
+		warnings = append(warnings, warn)
 	}
 
 	if opts.wantsShortcuts() {
@@ -455,20 +468,52 @@ const (
 	probeTimeout = 5 * time.Second
 )
 
-// downloadRequest 描述一次下载：地址、完整性预期、临时文件后缀与所属阶段。
+// artifactKind 描述一类发布产物的下载特征：临时文件后缀、所属阶段与出错文案里的名字。
+type artifactKind struct {
+	suffix string       // 临时文件后缀（如 ".zip" / ".exe"）
+	stage  installStage // 汇报进度时使用的阶段
+	label  string       // 出错文案里的产物名（如「安装包」「更新程序」）
+}
+
+var (
+	kindPackage = artifactKind{suffix: ".zip", stage: stageDownloading, label: "安装包"}
+	kindUpdater = artifactKind{suffix: ".exe", stage: stageUpdatingUpdater, label: "更新程序"}
+)
+
+// downloadRequest 描述一次下载：地址、完整性预期、临时文件后缀、所属阶段与产物名。
 type downloadRequest struct {
 	url      string       // 下载地址
 	expected int64        // 预期字节数；>0 时校验下载完整性，0 表示未知
 	suffix   string       // 临时文件后缀（如 ".zip" / ".exe"）
 	stage    installStage // 汇报进度时使用的阶段
+	label    string       // 出错文案里的产物名
 }
 
-// downloadArtifact 把安装包下载到临时文件，返回其路径。
-// candidates 是同一个安装包的候选直链（选定源在前，镜像源在后）：
+// requestFor 按产物类型组装一次下载请求。
+func (k artifactKind) requestFor(art artifact) downloadRequest {
+	return downloadRequest{
+		url:      art.DownloadURL,
+		expected: art.Size,
+		suffix:   k.suffix,
+		stage:    k.stage,
+		label:    k.label,
+	}
+}
+
+// describe 返回产物名，未指定时按安装包称之。
+func (r downloadRequest) describe() string {
+	if r.label != "" {
+		return r.label
+	}
+	return "安装包"
+}
+
+// downloadArtifact 把发布产物下载到临时文件，返回其路径。
+// candidates 是同一个产物的候选直链（选定源在前，镜像源在后）：
 // 先探测把可达的提前，再按顺序下载，一个源彻底失败就换下一个。
-func downloadArtifact(ctx context.Context, candidates []artifact, report progressFunc) (string, error) {
+func downloadArtifact(ctx context.Context, candidates []artifact, kind artifactKind, report progressFunc) (string, error) {
 	if len(candidates) == 0 {
-		return "", errors.New("发布版中没有可用的安装包地址")
+		return "", errors.New("发布版中没有可用的下载地址")
 	}
 
 	var (
@@ -476,12 +521,7 @@ func downloadArtifact(ctx context.Context, candidates []artifact, report progres
 		lastErr error
 	)
 	for _, art := range probeOrder(ctx, candidates) {
-		path, err := downloadWithRetry(ctx, downloadRequest{
-			url:      art.DownloadURL,
-			expected: art.Size,
-			suffix:   ".zip",
-			stage:    stageDownloading,
-		}, report)
+		path, err := downloadWithRetry(ctx, kind.requestFor(art), report)
 		if err == nil {
 			return path, nil
 		}
@@ -600,12 +640,12 @@ func downloadFromURL(ctx context.Context, req downloadRequest, report progressFu
 
 	resp, err := (&http.Client{Timeout: installTimeout}).Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("下载安装包失败：%w", err)
+		return "", fmt.Errorf("下载%s失败：%w", req.describe(), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载安装包失败：HTTP %d", resp.StatusCode)
+		return "", fmt.Errorf("下载%s失败：HTTP %d", req.describe(), resp.StatusCode)
 	}
 
 	total := resp.ContentLength
