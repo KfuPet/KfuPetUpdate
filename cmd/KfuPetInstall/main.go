@@ -678,7 +678,7 @@ const (
 	logoFadeInDuration  = 450 * time.Millisecond
 )
 
-// checkingView 组装查询中的全屏闪屏：Logo + 旋转指示器 + 跳动省略号。
+// checkingView 组装查询中的全屏闪屏：Logo + 跳动省略号。
 // 返回内容连同 Logo 的遮罩，供查询结束后播放 Logo 渐隐。
 func checkingView() (fyne.CanvasObject, *uifx.Cover) {
 	logoImage := canvas.NewImageFromResource(fyne.NewStaticResource("Startlogo.png", startLogoPNG))
@@ -686,15 +686,12 @@ func checkingView() (fyne.CanvasObject, *uifx.Cover) {
 	logoArea, logoCover := uifx.NewCover(logoImage)
 	logoBox := container.NewCenter(container.NewGridWrap(fyne.NewSize(96, 96), logoArea))
 
-	spinner := uifx.NewSpinner()
-
 	label := widget.NewLabelWithStyle("正在查询当前版本信息", fyne.TextAlignCenter, fyne.TextStyle{})
 	dots := uifx.NewDots()
 	appName := smallText("KfuPetInstall")
 
 	return container.NewCenter(container.NewVBox(
 		logoBox,
-		container.NewCenter(container.NewGridWrap(fyne.NewSize(40, 40), spinner)),
 		container.NewCenter(container.NewHBox(label, dots)),
 		container.NewCenter(appName),
 	)), logoCover
@@ -1326,11 +1323,9 @@ func runGUI(cmd command) {
 		// 卸载期间用模态框挡住主界面，避免重复触发。
 		// 同时声明"正在干活"：删到一半被别的实例结束掉，会留下卸了一半的目录。
 		winapi.MarkBusy()
-		spinner := uifx.NewSpinner()
 		busyLabel := widget.NewLabel("正在卸载 KfuPet")
 		modal := dialog.NewCustomWithoutButtons("正在卸载",
 			container.NewCenter(container.NewVBox(
-				container.NewCenter(container.NewGridWrap(fyne.NewSize(48, 48), spinner)),
 				container.NewCenter(container.NewHBox(busyLabel, uifx.NewDots())),
 			)), w)
 		modal.Show()

@@ -23,18 +23,16 @@ func newRepairingView(s appState) *installingView {
 
 // buildRepairCheckingView 组装体检中的全屏页。
 // 体检要查注册表、探测快捷方式，必要时还要联网取哈希清单，耗时不定，
-// 因此给个转圈 + 文案，而不是像其它流程那样先摆一张静态页。
+// 因此给个会动的省略号 + 文案，而不是像其它流程那样先摆一张静态页。
 func buildRepairCheckingView() fyne.CanvasObject {
 	logoImage := canvas.NewImageFromResource(fyne.NewStaticResource("Startlogo.png", startLogoPNG))
 	logoImage.FillMode = canvas.ImageFillContain
 	logoBox := container.NewCenter(container.NewGridWrap(fyne.NewSize(96, 96), logoImage))
 
-	spinner := uifx.NewSpinner()
 	label := widget.NewLabelWithStyle("正在检查安装完整性", fyne.TextAlignCenter, fyne.TextStyle{})
 
 	return container.NewCenter(container.NewVBox(
 		logoBox,
-		container.NewCenter(container.NewGridWrap(fyne.NewSize(40, 40), spinner)),
 		container.NewCenter(container.NewHBox(label, uifx.NewDots())),
 		container.NewCenter(smallText("KfuPetInstall")),
 	))

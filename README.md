@@ -251,7 +251,7 @@ KfuPet 侧须读同一处（见「卸载流程」）。
   - `icon/`：图标素材（`Startlogo.png` 主界面 Logo、`app.ico` exe 多尺寸图标）
 - `internal/version/`：版本号归一与比较（去 `v` 前缀、按段数字比较、预发布后缀）；升级判断、修复的"线上是否比本机旧"判断与运行环境版本挑选共用这一套
 - `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动/等待/强制终止、临时副本目录自删安排、PE 版本资源读取（`lock_*` / `notify_*` / `process_*` / `version_*` 四组）
-- `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、缓动曲线（`easing.go`）、旋转点阵指示器（`spinner.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
+- `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、缓动曲线（`easing.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
 - `internal/dotnet/`：运行环境（.NET 桌面运行时）：共享框架目录探测与版本挑选（`Detect`）、静默安装（`InstallSilent`）、候选下载地址与手动下载引导地址
 - `internal/winreg/`：注册表读写：安装记录与标准卸载入口（写机器级 HKLM、读兼容 HKCU，固定 64 位视图；修复用只读 HKLM 的 `ReadMachineInstallRecord` 判断记录是否真的补到位，另提供 `ReadUninstallEntry` 逐字段比对；`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
 - `dist/`：打包输出目录（`go build -o dist/`，已在 `.gitignore` 忽略）
