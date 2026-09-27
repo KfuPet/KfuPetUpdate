@@ -63,10 +63,11 @@ else {
     Write-Host '==> 资源对象已是最新，跳过生成' -ForegroundColor DarkGray
 }
 
-# 2. 编译（-H=windowsgui 必须带上，否则双击运行会多出黑色控制台窗口）
+# 2. 编译（-H=windowsgui 必须带上，否则双击运行会多出黑色控制台窗口；
+#    -s -w 剥离符号表与调试信息、-trimpath 去掉编译机路径，能显著缩小体积）
 Write-Host '==> 编译 dist/KfuPetInstall.exe' -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path dist | Out-Null
-go build -ldflags '-H=windowsgui' -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
+go build -trimpath -ldflags '-s -w -H=windowsgui' -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 if ($LASTEXITCODE -ne 0) { throw "go build 失败（退出码 $LASTEXITCODE）" }
 Write-Host "==> 完成：$exe" -ForegroundColor Green
 

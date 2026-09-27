@@ -48,8 +48,9 @@ go run ./cmd/KfuPetInstall
 
 # 打包（输出到 dist/）
 # -H=windowsgui 必须带上：否则 exe 是控制台子系统，双击运行会多出一个黑色命令行窗口
+# -s -w 剥离符号表与调试信息，-trimpath 去掉编译机路径
 New-Item -ItemType Directory -Force -Path dist | Out-Null
-go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
+go build -trimpath -ldflags "-s -w -H=windowsgui" -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 ```
 
 ### 发布清单生成
