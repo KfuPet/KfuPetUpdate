@@ -237,7 +237,7 @@ func versionForInstall(rel *releaseInfo, pkgPath string) string {
 }
 
 // ensureDesktopRuntime 下载并静默安装运行环境；本机已装好时直接返回。
-// 下载地址全部失败时返回错误，由调用方决定跳过，不阻断主流程。
+// 下载失败时返回错误，由调用方决定跳过，不阻断主流程。
 func ensureDesktopRuntime(ctx context.Context, report progressFunc) error {
 	if dotnet.Detect().Present {
 		return nil
@@ -249,7 +249,7 @@ func ensureDesktopRuntime(ctx context.Context, report progressFunc) error {
 	}
 	defer os.Remove(path)
 
-	// 备用地址是第三方文件站，失败时可能落地一个 HTML 错误页；执行前先确认是可执行文件。
+	// 下载失败时可能落地一个 HTML 错误页；执行前先确认是可执行文件。
 	if !dotnet.LooksLikeExecutable(path) {
 		return fmt.Errorf("下载到的运行环境安装包不可用")
 	}
@@ -258,21 +258,14 @@ func ensureDesktopRuntime(ctx context.Context, report progressFunc) error {
 	return dotnet.InstallSilent(path)
 }
 
-// downloadEnvInstaller 依次尝试各候选地址下载运行环境安装包，返回落地的临时文件路径。
+// downloadEnvInstaller 从微软官方构建站下载运行环境安装包，返回落地的临时文件路径。
 func downloadEnvInstaller(ctx context.Context, report progressFunc) (string, error) {
-	var fails []string
-	for _, u := range dotnet.DownloadURLs {
-		req := downloadRequest{url: u, suffix: ".exe", stage: stageEnvDownloading, label: "运行环境"}
-		path, err := downloadWithRetry(ctx, req, report)
-		if err == nil {
-			return path, nil
-		}
-		fails = append(fails, err.Error())
-		if ctx.Err() != nil {
-			break
-		}
+	req := downloadRequest{url: dotnet.DownloadURL, suffix: ".exe", stage: stageEnvDownloading, label: "运行环境"}
+	path, err := downloadWithRetry(ctx, req, report)
+	if err != nil {
+		return "", fmt.Errorf("运行环境下载失败：%w", err)
 	}
-	return "", fmt.Errorf("运行环境下载失败：%s", strings.Join(fails, "；"))
+	return path, nil
 }
 
 // installResult 是一次安装的产物。

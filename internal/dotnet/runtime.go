@@ -26,12 +26,9 @@ const (
 	frameworkDir = "Microsoft.WindowsDesktop.App"
 )
 
-// DownloadURLs 是运行环境安装包的候选下载地址，按序尝试：
-// 微软官方构建站优先，失败时回退到备用地址。
-var DownloadURLs = []string{
-	"https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/8.0.31/windowsdesktop-runtime-8.0.31-win-x64.exe",
-	"https://exe1.webgetstore.com/2026/09/19/a835366740fbbe1547d86e579f80a83e.exe?sg=869563340255fd7bc82be1c9c32b2036&e=6aae587b&fileName=windowsdesktop-runtime-8.0.31-win-x64.exe&fi=319335245",
-}
+// DownloadURL 是运行环境安装包的下载地址（微软官方构建站）。
+// 下载失败时不再另设备选，由界面引导用户手动下载。
+const DownloadURL = "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/8.0.31/windowsdesktop-runtime-8.0.31-win-x64.exe"
 
 // 自动安装失败后引导用户手动下载的地址。
 const (

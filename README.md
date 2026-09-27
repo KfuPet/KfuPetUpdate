@@ -75,7 +75,7 @@ go build -ldflags -H=windowsgui -o dist/KfuPetInstall.exe ./cmd/KfuPetInstall
 
 安装包已不再自带 .NET 运行时，因此启动时会在查询版本的同时检测本机是否装有 KfuPet 所需的 **.NET 桌面运行时**（Microsoft Windows Desktop Runtime 8.0.x）。缺失时，主界面点「安装」会先弹窗询问是否一并安装（默认勾选，取消则放弃本次安装）。安装时运行环境排在 KfuPet 本体之前，用 `/install /quiet /norestart` **静默安装、不弹任何窗口**。
 
-运行环境安装包有两个下载地址（微软官方构建站优先，失败回退备用地址），两个都拿不到时跳过环境、继续装 KfuPet，并在安装结束后弹窗让用户选择手动下载：微软官网、蓝奏云（提取码 `h5vb`）或稍后自行安装。
+运行环境安装包从微软官方构建站下载，拿不到时跳过环境、继续装 KfuPet，并在安装结束后弹窗让用户选择手动下载：微软官网、蓝奏云（提取码 `h5vb`）或稍后自行安装。
 
 安装方式分两种，在「安装选项」页用单选项切换：
 
