@@ -632,7 +632,7 @@ func confirmInstallEnv(w fyne.Window, onChoice func(withEnv bool)) {
 func showEnvManualDownload(w fyne.Window) {
 	note := widget.NewLabel("运行环境未能自动下载安装，请手动安装后再启动 KfuPet。")
 	note.Wrapping = fyne.TextWrapWord
-	code := smallText("蓝奏云提取码：" + dotnet.LanzouCode)
+	code := smallText("蓝奏云提取码：" + dotnet.LanzouCode + "（点「蓝奏云」自动复制）")
 
 	var d *dialog.CustomDialog
 	// 三个选项都会关掉本弹窗：前两个再拉起浏览器。
@@ -644,7 +644,11 @@ func showEnvManualDownload(w fyne.Window) {
 	}
 	buttons := container.NewHBox(
 		widget.NewButton("微软官网", func() { open(dotnet.OfficialURL) }),
-		widget.NewButton("蓝奏云", func() { open(dotnet.LanzouURL) }),
+		widget.NewButton("蓝奏云", func() {
+			// 提取码随打开页面一起复制：用户切到蓝奏云页面直接粘贴即可，不必手抄。
+			w.Clipboard().SetContent(dotnet.LanzouCode)
+			open(dotnet.LanzouURL)
+		}),
 		widget.NewButton("稍后自行安装", func() { d.Hide() }),
 	)
 	d = dialog.NewCustomWithoutButtons("需要手动安装运行环境",
