@@ -20,32 +20,44 @@ const (
 
 // stepRow 是一行步骤的全部画布对象。
 type stepRow struct {
-	ring  *canvas.Circle // 未开始：灰色空心圈
-	dot   *canvas.Circle // 当前步：主题色实心点（脉冲）
-	tick1 *canvas.Line   // 已完成：对勾第一笔
-	tick2 *canvas.Line   // 已完成：对勾第二笔
-	label *canvas.Text
-	bx    float32 // 行内图标盒的左上角（Layout 写入，画勾动画读取）
-	by    float32
+	ring   *canvas.Circle // 未开始：灰色空心圈
+	dot    *canvas.Circle // 当前步：主题色实心点（脉冲）
+	tick1  *canvas.Line   // 已完成：对勾第一笔
+	tick2  *canvas.Line   // 已完成：对勾第二笔
+	cross1 *canvas.Line   // 失败：红叉第一笔
+	cross2 *canvas.Line   // 失败：红叉第二笔
+	label  *canvas.Text
+	bx     float32 // 行内图标盒的左上角（Layout 写入，画勾动画读取）
+	by     float32
 }
 
 // StepList 是安装步骤清单：已完成画绿色对勾（逐笔描出），
-// 当前步骤圆点脉冲高亮，未开始步骤显示弱化的空心圈。
+// 当前步骤圆点脉冲高亮，未开始步骤显示弱化的空心圈；
+// 被流程标注为失败的步骤画红色叉号，且不会再随流程推进变成对勾。
 type StepList struct {
 	widget.BaseWidget
 	stages  []string
 	current int
+	seen    map[int]bool // 曾经作为当前步出现过的行（用于区分"已完成"与"被跳过"）
+	failed  map[int]bool // 被标注为失败的行
 }
 
 // NewStepList 创建步骤清单，stages 为展示文案（调用方自行编号）。
 func NewStepList(stages []string) *StepList {
-	s := &StepList{stages: stages}
+	s := &StepList{
+		stages: stages,
+		seen:   map[int]bool{},
+		failed: map[int]bool{},
+	}
 	s.ExtendBaseWidget(s)
 	return s
 }
 
 // SetCurrent 把当前步骤推进到 idx；新完成的行会播放画勾动画。
 func (s *StepList) SetCurrent(idx int) {
+	// 先记下"这一步走到过"，即使与当前值相同（首次汇报就是第 0 步）。
+	// 流程失败后可能直接跳到后面的阶段，没走到过的行据此判为被跳过，而不是已完成。
+	s.seen[idx] = true
 	if idx == s.current {
 		return
 	}
@@ -53,12 +65,22 @@ func (s *StepList) SetCurrent(idx int) {
 	s.Refresh()
 }
 
+// Fail 把第 idx 步标记为失败：画红色叉号，且不会被后续 SetCurrent 改写成对勾。
+func (s *StepList) Fail(idx int) {
+	if idx < 0 || idx >= len(s.stages) || s.failed[idx] {
+		return
+	}
+	s.failed[idx] = true
+	s.Refresh()
+}
+
 func (s *StepList) CreateRenderer() fyne.WidgetRenderer {
 	fg := toNRGBA(theme.Color(theme.ColorNameForeground))
 	primary := toNRGBA(theme.Color(theme.ColorNamePrimary))
 	success := toNRGBA(theme.Color(theme.ColorNameSuccess))
+	errCol := toNRGBA(theme.Color(theme.ColorNameError))
 
-	r := &stepListRenderer{owner: s, fg: fg, primary: primary, success: success, ticked: map[int]bool{}}
+	r := &stepListRenderer{owner: s, fg: fg, primary: primary, success: success, err: errCol, ticked: map[int]bool{}}
 	for _, name := range s.stages {
 		ring := canvas.NewCircle(color.Transparent)
 		ring.StrokeWidth = 1.6
@@ -66,11 +88,13 @@ func (s *StepList) CreateRenderer() fyne.WidgetRenderer {
 		label := canvas.NewText(name, fg)
 		label.TextSize = theme.TextSize()
 		r.rows = append(r.rows, &stepRow{
-			ring:  ring,
-			dot:   dot,
-			tick1: &canvas.Line{StrokeColor: success, StrokeWidth: 2},
-			tick2: &canvas.Line{StrokeColor: success, StrokeWidth: 2},
-			label: label,
+			ring:   ring,
+			dot:    dot,
+			tick1:  &canvas.Line{StrokeColor: success, StrokeWidth: 2},
+			tick2:  &canvas.Line{StrokeColor: success, StrokeWidth: 2},
+			cross1: &canvas.Line{StrokeColor: errCol, StrokeWidth: 2},
+			cross2: &canvas.Line{StrokeColor: errCol, StrokeWidth: 2},
+			label:  label,
 		})
 	}
 	r.pulse = &fyne.Animation{
@@ -93,6 +117,7 @@ type stepListRenderer struct {
 	fg      color.NRGBA
 	primary color.NRGBA
 	success color.NRGBA
+	err     color.NRGBA
 	active  int          // 当前脉冲的行
 	ticked  map[int]bool // 已播过画勾动画的行
 	laidOut bool
@@ -130,9 +155,9 @@ func (r *stepListRenderer) MinSize() fyne.Size {
 }
 
 func (r *stepListRenderer) Objects() []fyne.CanvasObject {
-	objs := make([]fyne.CanvasObject, 0, len(r.rows)*5)
+	objs := make([]fyne.CanvasObject, 0, len(r.rows)*7)
 	for _, row := range r.rows {
-		objs = append(objs, row.ring, row.dot, row.tick1, row.tick2, row.label)
+		objs = append(objs, row.ring, row.dot, row.tick1, row.tick2, row.cross1, row.cross2, row.label)
 	}
 	return objs
 }
@@ -145,9 +170,17 @@ func (r *stepListRenderer) applyAll() {
 	r.active = cur
 	for i, row := range r.rows {
 		switch {
-		case i < cur: // 已完成
+		case r.owner.failed[i]: // 失败：红叉（流程可能继续，但这一步确实没成）
 			row.ring.Hide()
 			row.dot.Hide()
+			hideTick(row)
+			r.drawCross(row)
+			row.label.Color = r.err
+			row.label.TextStyle = fyne.TextStyle{}
+		case i < cur && r.owner.seen[i]: // 已完成
+			row.ring.Hide()
+			row.dot.Hide()
+			hideCross(row)
 			row.label.Color = r.fg
 			row.label.TextStyle = fyne.TextStyle{}
 			if r.ticked[i] || !r.laidOut || !animationsOn() {
@@ -160,19 +193,19 @@ func (r *stepListRenderer) applyAll() {
 		case i == cur: // 当前步
 			row.ring.Hide()
 			row.dot.Show()
-			row.tick1.Hide()
-			row.tick2.Hide()
+			hideTick(row)
+			hideCross(row)
 			row.label.Color = r.fg
 			row.label.TextStyle = fyne.TextStyle{Bold: true}
 			row.dot.FillColor = r.primary
 			row.dot.Refresh()
-		default: // 未开始
+		default: // 未开始，或因前序失败被跳过（流程直接跳到更靠后的阶段）
 			row.ring.Show()
 			row.ring.StrokeColor = fadeAlpha(r.fg, 0x40)
 			row.ring.Refresh()
 			row.dot.Hide()
-			row.tick1.Hide()
-			row.tick2.Hide()
+			hideTick(row)
+			hideCross(row)
 			row.label.Color = fadeAlpha(r.fg, 0x60)
 			row.label.TextStyle = fyne.TextStyle{}
 		}
@@ -221,6 +254,32 @@ func (r *stepListRenderer) animateTick(i int) {
 		Tick:     func(f float32) { r.drawTick(row, f) },
 	}
 	anim.Start()
+}
+
+// 失败叉号两笔在图标盒内的归一化端点。
+var (
+	crossA0 = fyne.NewPos(0.27, 0.27)
+	crossA1 = fyne.NewPos(0.73, 0.73)
+	crossB0 = fyne.NewPos(0.73, 0.27)
+	crossB1 = fyne.NewPos(0.27, 0.73)
+)
+
+// hideTick 收起对勾两笔。
+func hideTick(row *stepRow) {
+	row.tick1.Hide()
+	row.tick2.Hide()
+}
+
+// hideCross 收起叉号两笔。
+func hideCross(row *stepRow) {
+	row.cross1.Hide()
+	row.cross2.Hide()
+}
+
+// drawCross 画出完整的失败叉号。
+func (r *stepListRenderer) drawCross(row *stepRow) {
+	drawStroke(row.cross1, tickPoint(row, crossA0), tickPoint(row, crossA1), 1, r.err)
+	drawStroke(row.cross2, tickPoint(row, crossB0), tickPoint(row, crossB1), 1, r.err)
 }
 
 // drawStroke 把线段从 from 朝 to 描到 t 比例处；t 为 0 时隐藏。

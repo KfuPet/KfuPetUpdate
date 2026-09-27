@@ -450,7 +450,12 @@ func (v *installingView) update(p installProgress) {
 	v.stage.Text = string(p.Stage)
 	v.stage.Refresh()
 	v.stageBox.Refresh() // 阶段文案长度变化后重新居中
-	v.steps.SetCurrent(stageIndex(v.stages, p.Stage))
+	if idx := stageIndex(v.stages, p.Stage); p.Failed {
+		// 失败阶段（流程可能继续）只画红叉，不推进当前步；后续阶段汇报时再往下走。
+		v.steps.Fail(idx)
+	} else {
+		v.steps.SetCurrent(idx)
+	}
 
 	// 运行环境、安装包与更新程序的下载都带字节进度，用确定进度条展示；
 	// 其余阶段无法量化，用不确定进度条表示"正在进行"。

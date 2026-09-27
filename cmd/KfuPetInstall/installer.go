@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,7 +25,34 @@ import (
 
 // installTimeout 单次安装允许的最长时间。
 // 安装包为 70 MB 量级，远大于版本查询，因此不复用 checkTimeout。
+// 它兜底整次流程，不适合用来快速发现"地址不可用"，连接类超时见下方下载客户端。
 const installTimeout = 30 * time.Minute
+
+// 下载客户端的连接类超时：把"地址不可用"与"网速慢"区分开。
+// 整体仍由 installTimeout 兜底，因此这里只约束建连、握手与等待响应头，
+// 给得比整体短得多——地址写错时几十秒内就能报错，而不是干等到整体超时。
+const (
+	downloadDialTimeout           = 10 * time.Second
+	downloadTLSHandshakeTimeout   = 10 * time.Second
+	downloadResponseHeaderTimeout = 20 * time.Second
+)
+
+// downloadClient 是下载与探测共用的 HTTP 客户端。
+// 关键点是把连接类超时压短：写错的地址若域名能解析、TCP 能连上却迟迟不回，
+// 默认客户端会一直等到整体超时才失败；这里靠 ResponseHeaderTimeout 快速收场。
+var downloadClient = &http.Client{
+	Timeout: installTimeout,
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   downloadDialTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   downloadTLSHandshakeTimeout,
+		ResponseHeaderTimeout: downloadResponseHeaderTimeout,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+}
 
 // installStage 描述安装流程所处的阶段，用于界面提示。
 type installStage string
@@ -100,6 +128,9 @@ type installProgress struct {
 	Done  int64        // 已完成字节（仅下载阶段有效）
 	Total int64        // 总字节，0 表示未知
 	Speed float64      // 下载速度（字节/秒），非下载阶段为 0
+	// Failed 表示该阶段失败。流程可能继续（如运行环境失败只作降级处理），
+	// 但界面必须把它画成失败，而不是随流程推进画成"已完成"的对勾。
+	Failed bool
 }
 
 type progressFunc func(installProgress)
@@ -238,6 +269,7 @@ func versionForInstall(rel *releaseInfo, pkgPath string) string {
 
 // ensureDesktopRuntime 下载并静默安装运行环境；本机已装好时直接返回。
 // 下载失败时返回错误，由调用方决定跳过，不阻断主流程。
+// 失败时把对应阶段标注为失败，界面据此画红叉，不再随流程推进画成对勾。
 func ensureDesktopRuntime(ctx context.Context, report progressFunc) error {
 	if dotnet.Detect().Present {
 		return nil
@@ -245,17 +277,23 @@ func ensureDesktopRuntime(ctx context.Context, report progressFunc) error {
 
 	path, err := downloadEnvInstaller(ctx, report)
 	if err != nil {
+		reportFailed(report, stageEnvDownloading)
 		return err
 	}
 	defer os.Remove(path)
 
 	// 下载失败时可能落地一个 HTML 错误页；执行前先确认是可执行文件。
 	if !dotnet.LooksLikeExecutable(path) {
+		reportFailed(report, stageEnvDownloading)
 		return fmt.Errorf("下载到的运行环境安装包不可用")
 	}
 
 	reportStage(report, stageEnvInstalling)
-	return dotnet.InstallSilent(path)
+	if err := dotnet.InstallSilent(path); err != nil {
+		reportFailed(report, stageEnvInstalling)
+		return err
+	}
+	return nil
 }
 
 // downloadEnvInstaller 从微软官方构建站下载运行环境安装包，返回落地的临时文件路径。
@@ -398,6 +436,13 @@ func launchKfuPet(installDir string) error {
 func reportStage(report progressFunc, stage installStage) {
 	if report != nil {
 		report(installProgress{Stage: stage})
+	}
+}
+
+// reportFailed 汇报某个阶段失败：流程会继续，但界面应把它画成失败而非对勾。
+func reportFailed(report progressFunc, stage installStage) {
+	if report != nil {
+		report(installProgress{Stage: stage, Failed: true})
 	}
 }
 
@@ -581,8 +626,8 @@ func probeCandidate(ctx context.Context, rawURL string) bool {
 	}
 	req.Header.Set("User-Agent", "KfuPetUpdate-Updater")
 
-	// 两个源的直链都会 302 到实际存储，需要跟随重定向，因此用默认 client。
-	resp, err := http.DefaultClient.Do(req)
+	// 两个源的直链都会 302 到实际存储，需要跟随重定向，因此用下载客户端。
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return false
 	}
@@ -631,7 +676,7 @@ func downloadFromURL(ctx context.Context, req downloadRequest, report progressFu
 	}
 	httpReq.Header.Set("User-Agent", "KfuPetUpdate-Updater")
 
-	resp, err := (&http.Client{Timeout: installTimeout}).Do(httpReq)
+	resp, err := downloadClient.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("下载%s失败：%w", req.describe(), err)
 	}
