@@ -11,9 +11,13 @@ import (
 
 // ShineBar 在确定进度条上叠加一条循环扫过的高光，
 // 让"有明确进度"的同时也有"正在动"的感觉。
+// SetValue 的变化以短补间动画过渡，进度条平滑推进而不是按汇报粒度跳变。
 type ShineBar struct {
 	widget.BaseWidget
-	bar *widget.ProgressBar
+	bar    *widget.ProgressBar
+	cur    float64 // 当前显示值（动画推进中）
+	target float64
+	anim   *fyne.Animation
 }
 
 // NewShineBar 创建带流光的进度条。
@@ -26,8 +30,38 @@ func NewShineBar() *ShineBar {
 // SetMax 设置进度条最大值。
 func (s *ShineBar) SetMax(v float64) { s.bar.Max = v }
 
-// SetValue 设置当前进度。
-func (s *ShineBar) SetValue(v float64) { s.bar.SetValue(v) }
+// SetValue 设置目标进度；从当前显示值补间过去。
+// 进度回退（重试）或系统关闭动画时直接到位。
+func (s *ShineBar) SetValue(v float64) {
+	if !animationsOn() || v <= s.cur {
+		s.stopAnim()
+		s.cur = v
+		s.bar.SetValue(v)
+		return
+	}
+	s.stopAnim()
+	from := s.cur
+	s.target = v
+	s.anim = &fyne.Animation{
+		Duration: 240 * time.Millisecond,
+		Curve:    fyne.AnimationLinear, // 缓动在 easeOutCubic 里做
+		Tick: func(f float32) {
+			s.cur = from + (s.target-from)*float64(easeOutCubic(f))
+			s.bar.SetValue(s.cur)
+		},
+	}
+	s.anim.Start()
+}
+
+// stopAnim 中断进行中的补间；当前显示值保留在已推进到的位置，
+// 下一次 SetValue 从这里接着走，不会回跳。
+func (s *ShineBar) stopAnim() {
+	if s.anim == nil {
+		return
+	}
+	s.anim.Stop()
+	s.anim = nil
+}
 
 func (s *ShineBar) CreateRenderer() fyne.WidgetRenderer {
 	shine := canvas.NewRectangle(color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 38})

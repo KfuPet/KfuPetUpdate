@@ -361,6 +361,7 @@ func buildOptionsPage(s appState, h flowHandlers) fyne.CanvasObject {
 type installingView struct {
 	root      fyne.CanvasObject
 	stage     *canvas.Text
+	stageFx   *uifx.TextPulse // 阶段文案切换时的脉冲过渡
 	stageBox  *fyne.Container // 文案变长变短后靠 Refresh 重新居中
 	detail    *canvas.Text
 	detailBox *fyne.Container
@@ -395,6 +396,10 @@ func newInstallingView(title string, stages []installStage, s appState) *install
 
 	v.stageBox = container.NewCenter(v.stage)
 	v.detailBox = container.NewCenter(v.detail)
+
+	// 阶段标题切换走脉冲过渡；换文案后新长度需要父容器重新居中
+	v.stageFx = uifx.NewTextPulse(v.stage)
+	v.stageFx.OnSwap = func() { v.stageBox.Refresh() }
 	v.root = container.NewCenter(container.NewVBox(
 		container.NewCenter(caption),
 		v.stageBox,
@@ -409,9 +414,7 @@ func newInstallingView(title string, stages []installStage, s appState) *install
 
 // update 按一次进度汇报原地刷新页面。
 func (v *installingView) update(p installProgress) {
-	v.stage.Text = string(p.Stage)
-	v.stage.Refresh()
-	v.stageBox.Refresh() // 阶段文案长度变化后重新居中
+	v.stageFx.Set(string(p.Stage), 200*time.Millisecond)
 	if idx := stageIndex(v.stages, p.Stage); p.Failed {
 		// 失败阶段（流程可能继续）只画红叉，不推进当前步；后续阶段汇报时再往下走。
 		v.steps.Fail(idx)
@@ -798,11 +801,11 @@ func runGUI(cmd command) {
 		render()
 	}
 
-	// 页面切换时整页淡入；同一阶段内的重建（如勾选选项）不重复播放。
+	// 页面切换时整页上滑淡入；同一阶段内的重建（如勾选选项）不重复播放。
 	lastPhase := installPhase(-1)
 	setContent := func(c fyne.CanvasObject) {
 		if state.phase != lastPhase {
-			c = uifx.FadeIn(c, 280*time.Millisecond)
+			c = uifx.SlideFadeIn(c, 300*time.Millisecond)
 			lastPhase = state.phase
 		}
 		w.SetContent(c)
@@ -960,7 +963,7 @@ func runGUI(cmd command) {
 		state.phase = phaseIdle
 		state.checkErr = nil
 		splash, splashLogo := checkingView()
-		w.SetContent(uifx.FadeIn(splash, 280*time.Millisecond))
+		w.SetContent(uifx.SlideFadeIn(splash, 280*time.Millisecond))
 		lastPhase = -1 // 闪屏之后的首次渲染也要淡入
 
 		shownAt := time.Now() // 记录闪屏开始时刻，用于保证最短展示时长
@@ -1285,7 +1288,7 @@ func runGUI(cmd command) {
 	// 安装目录，不该在用户没点头的情况下就开始。
 	if cmd.Action == actionUpdate {
 		dir := resolveInstallDir(cmd)
-		w.SetContent(uifx.FadeIn(buildUpdateReadyView(), 280*time.Millisecond))
+		w.SetContent(uifx.SlideFadeIn(buildUpdateReadyView(), 280*time.Millisecond))
 		// 先让窗口可见再弹确认框，否则弹窗会挂在一个还没显示的窗口上。
 		w.Show()
 		confirmUpgrade(w, func(continueUpdate bool) {
