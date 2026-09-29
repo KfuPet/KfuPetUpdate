@@ -236,8 +236,6 @@ type flowHandlers struct {
 	quit         func()     // 安装完成后不启动，直接退出 updater
 	setDesktop   func(bool) // 勾选/取消桌面快捷方式
 	setStartMenu func(bool) // 勾选/取消开始菜单快捷方式
-	setOffline   func(bool) // 切换在线/离线安装
-	pickPackage  func()     // 离线安装：选择本地安装包
 }
 
 // buildMainUI 组装主界面。
@@ -321,13 +319,7 @@ func buildChooseDirPage(s appState, h flowHandlers) fyne.CanvasObject {
 	)
 }
 
-// 安装方式在两个单选项间切换：在线安装从网络下载安装包，离线安装直接用本地已有的包。
-const (
-	modeOnline  = "在线安装"
-	modeOffline = "离线安装"
-)
-
-// buildOptionsPage 向导第二步：选择安装方式与是否创建快捷方式。
+// buildOptionsPage 向导第二步：选择是否创建快捷方式。
 func buildOptionsPage(s appState, h flowHandlers) fyne.CanvasObject {
 	caption := smallText("KfuPet 安装向导")
 	caption.TextStyle = fyne.TextStyle{}
@@ -341,57 +333,27 @@ func buildOptionsPage(s appState, h flowHandlers) fyne.CanvasObject {
 	startMenuCheck := widget.NewCheck("创建开始菜单快捷方式", h.setStartMenu)
 	startMenuCheck.SetChecked(s.opts.StartMenu)
 
-	// 先设初值再挂回调，避免建控件时就触发一次切换。
-	modeRadio := widget.NewRadioGroup([]string{modeOnline, modeOffline}, nil)
-	modeRadio.Horizontal = true
-	if s.opts.Offline {
-		modeRadio.SetSelected(modeOffline)
-	} else {
-		modeRadio.SetSelected(modeOnline)
-	}
-	modeRadio.OnChanged = func(v string) { h.setOffline(v == modeOffline) }
-
 	items := []fyne.CanvasObject{
 		layout.NewSpacer(),
 		container.NewCenter(caption),
 		container.NewCenter(title),
 		container.NewCenter(desktopCheck),
 		container.NewCenter(startMenuCheck),
-		container.NewCenter(modeRadio),
 	}
 	// 运行环境缺失时会在进向导前询问是否一并安装，这里把结果如实列出。
 	if s.opts.InstallEnv {
 		items = append(items, container.NewCenter(smallText("将一并安装运行环境："+dotnet.DisplayName)))
 	}
-	if s.opts.Offline {
-		items = append(items,
-			container.NewCenter(smallText("安装包："+packageLabel(s.opts.Package))),
-			container.NewCenter(actionButton("选择安装包…", h.pickPackage)),
-		)
-	}
-	// 主按钮文案随安装方式变化：在线安装 / 离线安装。
-	installLabel := modeOnline
-	if s.opts.Offline {
-		installLabel = modeOffline
-	}
 	items = append(items,
 		container.NewCenter(smallText("安装位置："+s.targetDir)),
 		container.NewCenter(container.NewHBox(
 			actionButton("上一步", h.back),
-			actionButton(installLabel, h.install),
+			actionButton("安装", h.install),
 		)),
 		layout.NewSpacer(),
 	)
 
 	return container.NewVBox(items...)
-}
-
-// packageLabel 返回离线安装包在界面上的展示文案。
-func packageLabel(path string) string {
-	if strings.TrimSpace(path) == "" {
-		return "未选择"
-	}
-	return path
 }
 
 // installingView 是安装进行中的页面：创建一次后由进度回调原地更新，
@@ -564,28 +526,6 @@ func pickInstallDir(w fyne.Window, startDir string, onPicked func(string)) {
 
 	if start := pickerStartDir(startDir); start != "" {
 		if loc, err := storage.ListerForURI(storage.NewFileURI(start)); err == nil {
-			d.SetLocation(loc)
-		}
-	}
-	d.Show()
-}
-
-// pickInstallPackage 让用户选择本地已有的离线安装包（zip）；取消或选择失败时不回调。
-// current 为已选中的安装包路径，用于定位对话框的初始位置。
-func pickInstallPackage(w fyne.Window, current string, onPicked func(string)) {
-	d := dialog.NewFileOpen(func(rc fyne.URIReadCloser, err error) {
-		if err != nil || rc == nil {
-			return // 用户取消，或选择过程中出错：保持当前页面不变
-		}
-		uri := rc.URI()
-		_ = rc.Close()
-		// Fyne 返回的路径在 Windows 上是正斜杠形式，需转回本地分隔符。
-		onPicked(filepath.Clean(filepath.FromSlash(uri.Path())))
-	}, w)
-	d.SetFilter(storage.NewExtensionFileFilter([]string{".zip"}))
-
-	if dir := filepath.Dir(current); current != "" && isDir(dir) {
-		if loc, err := storage.ListerForURI(storage.NewFileURI(dir)); err == nil {
 			d.SetLocation(loc)
 		}
 	}
@@ -954,15 +894,8 @@ func runGUI(cmd command) {
 					state.phase = phaseChooseDir
 					render()
 				},
-				install: func() {
-					// 离线安装必须先选定可用的安装包，否则留在本页提示。
-					if err := validateInstallOptions(state.opts); err != nil {
-						dialog.ShowError(err, w)
-						return
-					}
-					startInstall()
-				},
-				retry: func() { startInstall() },
+				install: func() { startInstall() },
+				retry:   func() { startInstall() },
 				backToMain: func() {
 					state.phase = phaseIdle
 					render()
@@ -978,16 +911,6 @@ func runGUI(cmd command) {
 				quit:         func() { a.Quit() },
 				setDesktop:   func(checked bool) { state.opts.Desktop = checked },
 				setStartMenu: func(checked bool) { state.opts.StartMenu = checked },
-				setOffline: func(offline bool) {
-					state.opts.Offline = offline
-					render()
-				},
-				pickPackage: func() {
-					pickInstallPackage(w, state.opts.Package, func(path string) {
-						state.opts.Package = path
-						render()
-					})
-				},
 			}))
 			return
 		}
@@ -1071,13 +994,15 @@ func runGUI(cmd command) {
 	}
 
 	// 安装：把当前发布版按向导选定的目录与选项安装。
-	// 在线安装依赖发布信息；离线安装直接用本地包，不依赖网络。
+	// 安装包从发布版下载，因此依赖发布信息。
 	startInstall = func() {
 		rel := state.rel
 		if state.phase == phaseRunning {
 			return
 		}
-		if rel == nil && !state.opts.Offline {
+		// 安装包一律从发布版下载，因此没有发布信息就无从安装；
+		// 主界面此时展示的是"无法获取线上版本"与重试，这里静默返回即可。
+		if rel == nil {
 			return
 		}
 		installDir, opts := state.targetDir, state.opts
@@ -1093,13 +1018,10 @@ func runGUI(cmd command) {
 		state.warnings = nil
 		// 声明"正在干活"：这期间别的实例不许把本进程结束掉。
 		winapi.MarkBusy()
-		// 进度起点：要先装运行环境就从它开始；离线安装跳过下载，从校验阶段起步。
+		// 进度起点：要先装运行环境就从它开始，否则从下载安装包起步。
 		firstStage := stageDownloading
-		switch {
-		case opts.InstallEnv:
+		if opts.InstallEnv {
 			firstStage = stageEnvDownloading
-		case opts.Offline:
-			firstStage = stageVerifying
 		}
 		state.progress = installProgress{Stage: firstStage}
 		installing = nil // 强制重建安装中页面（步骤数随选项变化）

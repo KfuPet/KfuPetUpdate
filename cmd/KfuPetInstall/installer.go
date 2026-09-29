@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -80,11 +79,9 @@ var installStages = []installStage{
 
 // installOptions 是安装向导第二页收集的选项。
 type installOptions struct {
-	Desktop    bool   // 创建桌面快捷方式
-	StartMenu  bool   // 创建开始菜单快捷方式
-	Offline    bool   // 离线安装：使用本地已有的安装包，不下载
-	Package    string // 离线安装包路径（Offline 为真时有效）
-	InstallEnv bool   // 一并安装运行环境（缺少 .NET 桌面运行时时提供）
+	Desktop    bool // 创建桌面快捷方式
+	StartMenu  bool // 创建开始菜单快捷方式
+	InstallEnv bool // 一并安装运行环境（缺少 .NET 桌面运行时时提供）
 }
 
 // wantsShortcuts 表示安装后是否需要创建快捷方式。
@@ -97,10 +94,6 @@ func stagesFor(opts installOptions) []installStage {
 	stages := make([]installStage, 0, len(installStages))
 	for _, s := range installStages {
 		if s == stageShortcuts && !opts.wantsShortcuts() {
-			continue
-		}
-		// 离线安装直接用本地安装包，跳过下载阶段。
-		if s == stageDownloading && opts.Offline {
 			continue
 		}
 		// 不需要装运行环境时，跳过对应的两个阶段。
@@ -181,60 +174,20 @@ func validateInstallDir(dir string) error {
 	return nil
 }
 
-// validateInstallOptions 校验向导第二页的选项：离线安装必须先选定安装包。
-func validateInstallOptions(opts installOptions) error {
-	if opts.Offline {
-		return validatePackageFile(opts.Package)
-	}
-	return nil
-}
-
-// validatePackageFile 校验离线安装包路径是否可用。
-func validatePackageFile(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("请先选择离线安装包")
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return errors.New("所选离线安装包不存在或不可读")
-	}
-	if info.IsDir() {
-		return errors.New("所选路径是文件夹，请选择安装包文件")
-	}
-	return nil
-}
-
 // installerSource 是本次安装使用的安装包文件来源。
 type installerSource struct {
-	path     string           // 安装包在磁盘上的路径
-	art      *artifact        // 用于校验的发布信息产物；离线且取不到发布信息时为 nil
+	path     string           // 安装包在磁盘上的路径（临时文件）
+	art      *artifact        // 用于校验的发布信息产物
 	manifest *releaseManifest // 发布版附带的哈希清单；取不到时为 nil，退回发布信息校验
-	cleanup  func()           // 用完后的清理动作（在线安装删临时文件；离线安装无操作）
+	cleanup  func()           // 用完后的清理动作（删除临时文件）
 }
 
-// resolveInstallerSource 准备本次安装要用的安装包：
-// 在线安装下载到临时文件（用完删除）；离线安装直接使用用户选定的本地文件。
-func resolveInstallerSource(ctx context.Context, rel *releaseInfo, opts installOptions, report progressFunc) (installerSource, error) {
-	if opts.Offline {
-		if err := validatePackageFile(opts.Package); err != nil {
-			return installerSource{}, err
-		}
-		// 能拿到发布信息时仍取其产物做 sha256 严格校验；断网取不到时留 nil，
-		// 由 verifyArchive 退回最低限度校验。
-		var art *artifact
-		if rel != nil {
-			if a, err := rel.artifactFor(); err == nil {
-				art = a
-			}
-		}
-		// 清单同样是"取到就用"，取不到不影响离线安装。
-		man, _ := fetchManifest(ctx, rel)
-		return installerSource{path: opts.Package, art: art, manifest: man, cleanup: func() {}}, nil
+// resolveInstallerSource 准备本次安装要用的安装包：下载到临时文件，用完删除。
+func resolveInstallerSource(ctx context.Context, rel *releaseInfo, report progressFunc) (installerSource, error) {
+	if rel == nil {
+		return installerSource{}, errors.New("缺少发布信息，无法安装")
 	}
 
-	if rel == nil {
-		return installerSource{}, errors.New("缺少发布信息，无法在线安装")
-	}
 	art, err := rel.artifactFor()
 	if err != nil {
 		return installerSource{}, err
@@ -251,18 +204,11 @@ func resolveInstallerSource(ctx context.Context, rel *releaseInfo, opts installO
 	return installerSource{path: path, art: art, manifest: man, cleanup: func() { os.Remove(path) }}, nil
 }
 
-// versionPattern 用于从安装包文件名中提取形如 1.2.3 的版本号。
-var versionPattern = regexp.MustCompile(`\d+(?:\.\d+)+`)
-
 // versionForInstall 返回本次安装要记录的版本号。
-// 在线安装取自发布信息；离线安装若拿不到发布信息（断网），
-// 退回从安装包文件名解析（如 KfuPet-v0.0.9-windows-amd64.zip），再不行记"未知"。
-func versionForInstall(rel *releaseInfo, pkgPath string) string {
+// 取自发布信息；缺失时记"未知"，不让安装因为一个展示用的版本号而失败。
+func versionForInstall(rel *releaseInfo) string {
 	if rel != nil && rel.Version != "" {
 		return normalizeVersion(rel.Version)
-	}
-	if m := versionPattern.FindString(filepath.Base(pkgPath)); m != "" {
-		return m
 	}
 	return "未知"
 }
@@ -314,7 +260,7 @@ type installResult struct {
 }
 
 // installKfuPet 把发布版安装到 installDir（升级走同一套流程）：
-// 安装运行环境 → 获取安装包（在线下载 / 离线取本地文件）→ 校验 → 解压 →
+// 安装运行环境 → 下载安装包 → 校验 → 解压 →
 // 替换安装目录 → 创建快捷方式 → 写入注册表。
 // 过程中任何一步失败都不会留下半成品安装：新文件先落在暂存目录，
 // 全部就绪后才整体替换，替换失败会回滚旧目录。
@@ -342,8 +288,8 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 		}
 	}
 
-	// 取到本次要用的安装包：在线下载，或离线直接使用用户选定的本地文件。
-	src, err := resolveInstallerSource(ctx, rel, opts, report)
+	// 取到本次要用的安装包：下载到临时文件，校验后使用。
+	src, err := resolveInstallerSource(ctx, rel, report)
 	if err != nil {
 		return installResult{}, err
 	}
@@ -379,12 +325,7 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	// 用户删掉当初下载的 updater 也不影响后续卸载与升级。发布版带了更新的
 	// 安装器时换成发布版这一份，否则复制自身；失败只降级为警告，
 	// 不因为"顺带更新更新程序"没成而把整次安装判为失败。
-	// 离线安装承诺"不下载"，因此这一步只从自身复制：新版更新程序留给下次在线流程。
-	var updaterMan *releaseManifest
-	if !opts.Offline {
-		updaterMan = src.manifest
-	}
-	warn, err := placeUpdater(ctx, rel, updaterMan, installDir, report)
+	warn, err := placeUpdater(ctx, rel, src.manifest, installDir, report)
 	if err != nil {
 		return installResult{}, err
 	}
@@ -402,7 +343,7 @@ func installKfuPet(ctx context.Context, rel *releaseInfo, installDir string, opt
 	}
 
 	reportStage(report, stageRegistering)
-	rec := winreg.InstallRecord{InstallPath: installDir, DisplayVersion: versionForInstall(rel, src.path)}
+	rec := winreg.InstallRecord{InstallPath: installDir, DisplayVersion: versionForInstall(rel)}
 
 	// 先写标准卸载入口，再写自己的安装记录：后者是"已安装"的唯一依据，
 	// 放在最后写，前面的失败就不会留下"记录已存在但安装未完成"的状态。
@@ -783,7 +724,10 @@ func copyWithProgress(dst io.Writer, src io.Reader, total int64, req downloadReq
 // verifyArchive 校验安装包。
 // 拿到哈希清单时以清单里的压缩包 sha256 为准——它不依赖发布接口是否给摘要，
 // 因此从镜像源下到的包也能验证；其次是发布信息的 sha256 摘要，再次是文件大小；
-// 都没有时（离线安装拿不到清单）退回最低限度校验——确认是可打开的 zip。
+// 三者都没有时（发布版没带清单、接口也不给摘要）退回最低限度校验——确认是可打开的 zip。
+//
+// art 是发布信息里选定源的产物，在线安装路径下必定非 nil；这里的 nil 判断只是
+// 防御性写法，拿它当"发布信息可能缺失"的入口并不成立。
 func verifyArchive(path string, art *artifact, man *releaseManifest, report progressFunc) error {
 	reportStage(report, stageVerifying)
 
