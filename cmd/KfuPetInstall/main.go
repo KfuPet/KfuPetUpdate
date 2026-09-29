@@ -766,7 +766,7 @@ func runGUI(cmd command) {
 	// 只能把它缩小，反而变糊。
 
 	w := a.NewWindow("KfuPetInstall")
-	w.Resize(fyne.NewSize(600, 420))
+	w.Resize(fyne.NewSize(650, 470))
 	w.SetFixedSize(true)
 	w.CenterOnScreen()
 
