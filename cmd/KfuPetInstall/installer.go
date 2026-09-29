@@ -128,16 +128,20 @@ type installProgress struct {
 
 type progressFunc func(installProgress)
 
+// appDirName 是安装目录在所选位置下使用的文件夹名。
+// 默认位置与"选了磁盘根目录时的自动填充"共用这一个名字，两处才不会各起一个名字。
+const appDirName = "KfuPet"
+
 // defaultInstallDir 返回向导预填的默认安装目录。
 // 装到 %ProgramFiles% 需要管理员权限，而本程序以 requireAdministrator 运行
 // （见 app.manifest），因此这里的写入不会因权限不足失败。
 func defaultInstallDir() string {
 	if base := os.Getenv("ProgramFiles"); base != "" {
-		return filepath.Join(base, "KfuPet")
+		return filepath.Join(base, appDirName)
 	}
 	// 极少数取不到 ProgramFiles 的环境下退回用户目录。
 	if base, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(base, "Programs", "KfuPet")
+		return filepath.Join(base, "Programs", appDirName)
 	}
 	return ""
 }
@@ -161,9 +165,38 @@ func isDir(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+// isVolumeRoot 判断路径是否就是文件系统根（如 F:\ 或 F:）。
+// 判据是"去掉尾部分隔符后，除卷名外不剩任何内容"，而不是 filepath.Dir(dir) == dir ——
+// 后者对 "F:\" 与 "F:" 给出不同结果，会漏判其中一种写法。
+//
+// 卷名为空时一律不算，这样也顺手挡住了光秃秃的盘符 "F"：它的 Dir 是 "."（而非它自己），
+// 单看 Dir 会漏判，但它同样会把文件撒在整块盘根下。网络共享根（\\server\share）
+// 也会被认出来，此处的调用方需按各自的方式处理。
+func isVolumeRoot(dir string) bool {
+	vol := filepath.VolumeName(dir)
+	if vol == "" {
+		return false
+	}
+	return strings.TrimRight(dir[len(vol):], `\/`) == ""
+}
+
+// resolveInstallDirTarget 把用户选定的位置整理成最终的安装目录。
+// 直接选了磁盘根目录时自动在其下补一层 appDirName：安装会把文件直接放进所选目录，
+// 落在整块磁盘根下既乱又容易与别的目录混在一起，与其报错让用户自己再选一次，
+// 不如直接给出 <盘符>:\KfuPet 让他确认或再改。
+func resolveInstallDirTarget(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || !isVolumeRoot(dir) {
+		return dir
+	}
+	return filepath.Join(dir, appDirName)
+}
+
 // validateInstallDir 校验用户选定的安装目录。
 // 安装会把程序文件直接放进所选目录，因此必须排除磁盘（或网络共享）根目录，
-// 否则几百个文件会散落在整块磁盘的根下。
+// 否则几百个文件会散落在整块磁盘的根下。调用方通常已用 resolveInstallDirTarget
+// 做过自动填充（选了盘符根会补成 <盘符>:\KfuPet），这里兜的是它填不出来的情况：
+// 网络共享根，以及所选位置恰好就叫 KfuPet 的磁盘根。
 func validateInstallDir(dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return errors.New("请先选择安装位置")

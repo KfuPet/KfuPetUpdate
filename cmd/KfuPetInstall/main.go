@@ -878,11 +878,15 @@ func runGUI(cmd command) {
 			setContent(buildInstallView(state, flowHandlers{
 				browse: func() {
 					pickInstallDir(w, state.targetDir, func(dir string) {
-						state.targetDir = dir
+						// 选完立刻整理：直接选了磁盘根目录时补成 <盘符>:\KfuPet，
+						// 让用户在本页就看见最终会用的路径，而不是等点了「下一步」才变。
+						state.targetDir = resolveInstallDirTarget(dir)
 						render()
 					})
 				},
 				next: func() {
+					// 兜底再整理一次：路径也可能来自默认值或别处的赋值。
+					state.targetDir = resolveInstallDirTarget(state.targetDir)
 					if err := validateInstallDir(state.targetDir); err != nil {
 						dialog.ShowError(err, w)
 						return
