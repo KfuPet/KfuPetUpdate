@@ -46,15 +46,15 @@ const (
 	githubRepo  = "KfuPet"
 )
 
-// 国内镜像仓库：https://gitee.com/lrht/kfu-pet
+// 国内镜像仓库：https://gitcode.com/Lrht/KfuPet
 // 该仓库只同步发行版附件（不含源码），用于 GitHub 不可达时兜底。
 const (
-	giteeOwner = "lrht"
-	giteeRepo  = "kfu-pet"
+	gitcodeOwner = "Lrht"
+	gitcodeRepo  = "KfuPet"
 )
 
-// GitHub 源的超时收得比 Gitee 紧：国内直连 GitHub 常被阻断，干等下去只会拖慢回退到 Gitee 的速度。
-// 代价是 GitHub 可达但慢于这个值时会被判为失败、改由 Gitee 兜底——镜像若落后于主源，
+// GitHub 源的超时收得比 GitCode 紧：国内直连 GitHub 常被阻断，干等下去只会拖慢回退到 GitCode 的速度。
+// 代价是 GitHub 可达但慢于这个值时会被判为失败、改由 GitCode 兜底——镜像若落后于主源，
 // 用户会被告知"已是最新"。
 const gitHubTimeout = 3 * time.Second
 
@@ -297,23 +297,23 @@ func normalizeVersion(version string) string {
 	return strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
-// giteeSource 从 Gitee Releases 获取最新版本信息。
-// Gitee 的 v5 接口读取公开仓库无需鉴权，字段与 GitHub 大体一致，
+// gitcodeSource 从 GitCode Releases 获取最新版本信息。
+// GitCode 的 v5 接口读取公开仓库无需鉴权，字段与 GitHub 大体一致，
 // 差异有三处：发布页地址需自行拼接、发布时间字段是 created_at、
 // 附件不提供 size 与 digest（下载侧对两者为 0/空都有兜底）。
-type giteeSource struct {
+type gitcodeSource struct {
 	client *http.Client
 }
 
-func newGiteeSource() *giteeSource {
-	return &giteeSource{
+func newGitcodeSource() *gitcodeSource {
+	return &gitcodeSource{
 		client: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
-func (s *giteeSource) fetchLatest(ctx context.Context) (*releaseInfo, error) {
-	apiURL := fmt.Sprintf("https://gitee.com/api/v5/repos/%s/%s/releases/latest",
-		giteeOwner, giteeRepo)
+func (s *gitcodeSource) fetchLatest(ctx context.Context) (*releaseInfo, error) {
+	apiURL := fmt.Sprintf("https://api.gitcode.com/api/v5/repos/%s/%s/releases/latest",
+		gitcodeOwner, gitcodeRepo)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
@@ -328,7 +328,7 @@ func (s *giteeSource) fetchLatest(ctx context.Context) (*releaseInfo, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Gitee API 返回状态码 %d", resp.StatusCode)
+		return nil, fmt.Errorf("GitCode API 返回状态码 %d", resp.StatusCode)
 	}
 
 	var data struct {
@@ -344,19 +344,21 @@ func (s *giteeSource) fetchLatest(ctx context.Context) (*releaseInfo, error) {
 		return nil, err
 	}
 	if data.TagName == "" {
-		return nil, fmt.Errorf("Gitee 响应中缺少 tag_name")
+		return nil, fmt.Errorf("GitCode 响应中缺少 tag_name")
 	}
 
 	rel := &releaseInfo{
 		Version: data.TagName,
-		// Gitee 的发布版对象不含 html_url，按 tag 拼发布页地址。
-		ReleasePageURL: fmt.Sprintf("https://gitee.com/%s/%s/releases/tag/%s",
-			giteeOwner, giteeRepo, data.TagName),
+		// GitCode 的发布版对象不含 html_url，按 tag 拼发布页地址。
+		ReleasePageURL: fmt.Sprintf("https://gitcode.com/%s/%s/releases/%s",
+			gitcodeOwner, gitcodeRepo, data.TagName),
 		ReleaseNotes: data.Body,
 	}
 	if t, err := time.Parse(time.RFC3339, data.CreatedAt); err == nil {
 		rel.PublishedAt = t
 	}
+	// 响应里还混着 GitCode 自动附带的源码包（v0.1.3.zip / .tar.gz 等），
+	// 与 GitHub 的 "Source code" 一样不提供安装包后缀，按后缀挑选时自然落选。
 	for _, a := range data.Assets {
 		if a.Name == "" || a.BrowserDownloadURL == "" {
 			continue
@@ -375,7 +377,7 @@ type namedSource struct {
 	source updateSource
 }
 
-// updateChecker 依次尝试多个更新源：GitHub 优先，失败时回退到 Gitee 国内镜像。
+// updateChecker 依次尝试多个更新源：GitHub 优先，失败时回退到 GitCode 国内镜像。
 type updateChecker struct {
 	sources []namedSource
 }
@@ -384,7 +386,7 @@ func newUpdateChecker() *updateChecker {
 	return &updateChecker{
 		sources: []namedSource{
 			{name: "GitHub", source: newGitHubSource()},
-			{name: "Gitee", source: newGiteeSource()},
+			{name: "GitCode", source: newGitcodeSource()},
 		},
 	}
 }

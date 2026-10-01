@@ -13,7 +13,7 @@ import (
 )
 
 // installerAssetName 是发布版里安装器附件的缺省名。
-// 清单里的 installer.name 优先，缺名时用它兜底（GitHub 与 Gitee 两处同名）。
+// 清单里的 installer.name 优先，缺名时用它兜底（GitHub 与 GitCode 两处同名）。
 const installerAssetName = "KfuPetInstall.exe"
 
 // updaterOwnVersion 返回本程序自身的版本，读的是 exe 资源里的版本信息

@@ -231,7 +231,7 @@ func resolveInstallerSource(ctx context.Context, rel *releaseInfo, report progre
 	if err != nil {
 		return installerSource{}, err
 	}
-	// 清单以选定源为优先。镜像源（Gitee）的接口不提供摘要，正是靠清单才能校验
+	// 清单以选定源为优先。镜像源（GitCode）的接口不提供摘要，正是靠清单才能校验
 	// 从它下到的包；取不到清单时退回原有的逐级降级校验。
 	man, _ := fetchManifest(ctx, rel)
 	return installerSource{path: path, art: art, manifest: man, cleanup: func() { os.Remove(path) }}, nil
@@ -554,7 +554,7 @@ func downloadArtifact(ctx context.Context, candidates []artifact, kind artifactK
 
 // probeOrder 并发探测所有候选，返回按可达性重排后的列表：通过的在前，失败的在后。
 // 并发是为了把总耗时封顶在单次 probeTimeout，而不是候选数 × probeTimeout。
-// 一个都没通过时按原顺序返回——探测失败可能只是对方不接受 HEAD，
+// 一个都没通过时按原顺序返回——探测失败可能只是对方限流或探测超时，
 // 不足以断定下载一定失败，因此探测只用来排序，不用来淘汰。
 func probeOrder(ctx context.Context, candidates []artifact) []artifact {
 	if len(candidates) < 2 {
@@ -587,18 +587,21 @@ func probeOrder(ctx context.Context, candidates []artifact) []artifact {
 	return ordered
 }
 
-// probeCandidate 用 HEAD 探测单个直链是否可达。
-// 必须用 HEAD 而不是"只取开头几字节"的 GET：Gitee 的发行版直链忽略 Range 头，
-// 带 Range 的请求会返回 200 并把整个安装包下发，那就等于白下一次。
+// probeCandidate 用 1 字节的 Range GET 探测单个直链是否可达。
+// 不用 HEAD：GitCode 的直链对 HEAD 一律返回 401（WAF 拦截该请求方法），
+// 会把可达的镜像误判成不可达，探测就起不到排序作用。
+// Range 的开销同样可以忽略：直链源按 206 只回 1 字节；万一对方忽略 Range 而回 200，
+// 读满 1 字节就关闭连接中止传输，不会把整个安装包拖下来。
 func probeCandidate(ctx context.Context, rawURL string) bool {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return false
 	}
 	req.Header.Set("User-Agent", "KfuPetUpdate-Updater")
+	req.Header.Set("Range", "bytes=0-0")
 
 	// 两个源的直链都会 302 到实际存储，需要跟随重定向，因此用下载客户端。
 	resp, err := downloadClient.Do(req)
@@ -606,7 +609,12 @@ func probeCandidate(ctx context.Context, rawURL string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return false
+	}
+	// 能读出 1 个字节即认为响应体可用；提前 EOF 也不影响"地址可达"这个结论。
+	_, _ = io.ReadFull(resp.Body, make([]byte, 1))
+	return true
 }
 
 // urlHost 取 URL 的主机名，用于在错误信息里指明是哪个源失败。
