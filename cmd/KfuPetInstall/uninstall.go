@@ -75,7 +75,7 @@ func dirSizeKB(dir string) uint32 {
 // 顺序很关键：先删程序文件，最后才删注册表记录。中间任何一步失败都保留注册表，
 // 用户重试时才有据可依；反过来（先删记录）会留下"显示未安装、文件却还在"的状态，
 // 用户以为卸干净了，比直接报错更糟。
-// 例外是快捷方式：删不掉只是残留一个指向已删程序的死链接，不该把卸载判为失败
+// 例外是快捷方式与开机自启项：删不掉只是残留一个指向已删程序的死入口，不该把卸载判为失败
 // （注册表记录仍要清，否则「应用和功能」里会留一条卸不掉的条目）。
 func uninstallKfuPet(installDir string, opts uninstallOptions) ([]string, error) {
 	// 程序正在运行时文件被占用，先让用户退出。
@@ -103,6 +103,13 @@ func uninstallKfuPet(installDir string, opts uninstallOptions) ([]string, error)
 	// removeShortcuts 内部已重试过，仍失败就记一条提示继续往下清。
 	if err := removeShortcuts(); err != nil {
 		warnings = append(warnings, "删除快捷方式失败："+err.Error()+"。可能有指向 KfuPet 的快捷方式残留，请手动删除。")
+	}
+
+	// KfuPet 的「开机自启动」开关会往 HKCU Run 写一项，程序文件删掉后它就指向死路径，
+	// 必须一并清掉。与快捷方式同理：清不掉只是残留一条死启动项，不该把卸载判为失败。
+	// 注意这一项与「保留个人数据」无关：数据留不留，启动项都得删。
+	if err := winreg.ClearStartupEntry(); err != nil {
+		warnings = append(warnings, "删除开机自启项失败："+err.Error()+"。请在「任务管理器 → 启动应用」中手动禁用。")
 	}
 
 	if !opts.KeepUserData {

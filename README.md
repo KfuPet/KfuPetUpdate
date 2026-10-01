@@ -188,11 +188,11 @@ KfuPet 发布版的顺风车**——发布版里的 `KfuPetInstall.exe` 就是�
 
 ### 卸载流程
 
-主界面点「卸载」→ 确认框（内含「保留个人数据」勾选，默认勾上）→ 删除安装目录 → 删除桌面/开始菜单快捷方式 → 按选择删除 `%APPDATA%\KfuPet` 等个人数据 → 最后删除注册表记录。
+主界面点「卸载」→ 确认框（内含「保留个人数据」勾选，默认勾上）→ 删除安装目录 → 删除桌面/开始菜单快捷方式与开机自启项 → 按选择删除 `%APPDATA%\KfuPet` 等个人数据 → 最后删除注册表记录。
 
 顺序是刻意的：**先把文件删干净，最后才删注册表**。中间任何一步失败都保留注册表，用户重试才有据可依；反过来会留下"显示未安装、文件却还在"的状态，用户以为卸干净了，比直接报错更糟。KfuPet 正在运行时会被先拦下。
 
-安装时把安装记录与标准卸载入口都写进机器级注册表（HKLM）：前者在 `HKLM\Software\KfuPet`，后者在 `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KfuPet`，因此「设置 → 应用和功能」对全机用户都会列出本程序。读取时先看 HKLM，读不到再回退早期版本留下的 HKCU 记录；卸载则两处都清。`UninstallString` 指向安装目录内的常驻副本并带 `--action=uninstall`，点卸载会直接弹出卸载确认框。
+安装时把安装记录与标准卸载入口都写进机器级注册表（HKLM）：前者在 `HKLM\Software\KfuPet`，后者在 `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KfuPet`，因此「设置 → 应用和功能」对全机用户都会列出本程序。读取时先看 HKLM，读不到再回退早期版本留下的 HKCU 记录；卸载则两处都清。此外还会清掉 KfuPet 设置里写下的开机自启项（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `KfuPet`），避免卸载后在「任务管理器 → 启动应用」里留下指向已删程序的死项；它与「保留个人数据」无关，数据留不留都要删。`UninstallString` 指向安装目录内的常驻副本并带 `--action=uninstall`，点卸载会直接弹出卸载确认框。
 
 ### 命令行参数
 
@@ -241,9 +241,9 @@ KfuPet 侧须读同一处（见「卸载流程」）。
   - `upgrade_ui.go`：升级界面（进行中/完成/失败页、强杀询问弹窗、完成后自动拉起 KfuPet）
   - `repair.go`：修复流程（体检常驻副本/快捷方式/安装信息/本体文件 → 只覆盖校验不通过的文件 → 补齐安装信息）
   - `repair_ui.go`：修复界面（体检中页面、体检报告确认弹窗、完成页，"无需修复"与"未完成"分开提示）
-  - `uninstall.go`：卸载流程（删安装目录 → 删快捷方式 → 按选择删个人数据 → 删注册表）与标准卸载入口的内容组装
+  - `uninstall.go`：卸载流程（删安装目录 → 删快捷方式与开机自启项 → 按选择删个人数据 → 删注册表）与标准卸载入口的内容组装
   - `cli.go`：命令行参数解析与静默卸载
-  - `selfcopy.go`：自身复制、临时副本接力与临时目录清理
+  - `selfcopy.go`：自身复制、临时副本接力与临时目录/临时下载文件清理
   - `shortcut_windows.go`：快捷方式的创建、删除与状态检查（经 PowerShell 调 `WScript.Shell`）
   - `app.rc`：Windows 资源脚本（exe 图标 + 属性「详细信息」版本信息 + 应用程序清单）
   - `app.manifest`：应用程序清单（声明 `requireAdministrator`）
@@ -253,7 +253,7 @@ KfuPet 侧须读同一处（见「卸载流程」）。
 - `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动/等待/强制终止、临时副本目录自删安排、PE 版本资源读取（`lock_*` / `notify_*` / `process_*` / `version_*` 四组）
 - `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、缓动曲线（`easing.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
 - `internal/dotnet/`：运行环境（.NET 桌面运行时）：共享框架目录探测与版本挑选（`Detect`）、静默安装（`InstallSilent`）、候选下载地址与手动下载引导地址
-- `internal/winreg/`：注册表读写：安装记录与标准卸载入口（写机器级 HKLM、读兼容 HKCU，固定 64 位视图；修复用只读 HKLM 的 `ReadMachineInstallRecord` 判断记录是否真的补到位，另提供 `ReadUninstallEntry` 逐字段比对；`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
+- `internal/winreg/`：注册表读写：安装记录与标准卸载入口（写机器级 HKLM、读兼容 HKCU，固定 64 位视图；修复用只读 HKLM 的 `ReadMachineInstallRecord` 判断记录是否真的补到位，另提供 `ReadUninstallEntry` 逐字段比对，`ClearStartupEntry` 清 KfuPet 的开机自启项；`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
 - `dist/`：打包输出目录（`go build -o dist/`，已在 `.gitignore` 忽略）
 
 ### 不提供离线安装（已移除）

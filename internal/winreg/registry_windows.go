@@ -22,6 +22,11 @@ const (
 	// uninstallEntryPath 是 Windows 标准卸载入口的位置，
 	// 写在这里的程序会出现在「设置 → 应用和功能」列表中。
 	uninstallEntryPath = `Software\Microsoft\Windows\CurrentVersion\Uninstall\KfuPet`
+
+	// startupRunPath 是当前用户的开机自启登记位置。KfuPet 的「开机自启动」开关
+	// 会往这里写名为 KfuPet 的值（见 KfuPet 侧 StartupService），卸载要一并清掉，
+	// 否则「任务管理器 → 启动应用」里会留下一条指向已删程序的死项。
+	startupRunPath = `Software\Microsoft\Windows\CurrentVersion\Run`
 )
 
 // regView 固定 64 位注册表视图，附加到打开/创建键的访问标记上。
@@ -31,6 +36,9 @@ const regView = registry.WOW64_64KEY
 const (
 	valueInstallPath = "InstallPath"
 	valueVersion     = "DisplayVersion"
+
+	// startupValueName 是 KfuPet 在开机自启项里登记的值名。
+	startupValueName = "KfuPet"
 )
 
 // ReadInstallRecord 读取注册表安装记录。
@@ -154,6 +162,27 @@ func ClearUninstallEntry() error {
 // ClearInstallRecord 删除安装记录；项本就不存在时视为成功。
 func ClearInstallRecord() error {
 	return clearKey(installRegistryPath)
+}
+
+// ClearStartupEntry 删除当前用户的开机自启登记；值本就不存在时视为成功。
+// KfuPet 自身只会启用/停用该项（见其设置界面），卸载必须由这里清掉。
+// 视图同样固定 64 位：KfuPet 在 64 位系统上以 64 位进程运行，读写的也是 64 位视图。
+// （若卸载程序是以另一个管理员账户提权运行的，清的是那个账户的 HKCU，
+// 原账户的登记项会残留，属于提权本身的边界。）
+func ClearStartupEntry() error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, startupRunPath, registry.SET_VALUE|regView)
+	if err != nil {
+		if errors.Is(err, registry.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer k.Close()
+
+	if err := k.DeleteValue(startupValueName); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // clearKey 删除机器级与用户级两处的同名键。

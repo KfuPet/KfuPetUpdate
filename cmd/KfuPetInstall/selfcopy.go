@@ -144,9 +144,15 @@ func removeTempDirLater() {
 	winapi.RemoveTempDirLater(dir)
 }
 
-// cleanStaleTempDirs 清理遗留下来的临时副本目录。
+// staleTempFileAge 是判定临时文件"陈旧"的年龄下限。
+// 下载中途落地的临时文件（KfuPetUpdate-*.zip/.exe）正常会随流程删除（defer），
+// 崩溃、被强杀时会残留；但删早了可能误删另一个实例正在写入的那份。
+// 下载整体有 installTimeout（30 分钟）兜底，超过这个年龄的文件不可能还有活的写入者。
+const staleTempFileAge = 1 * time.Hour
+
+// cleanStaleTempDirs 清理遗留下来的临时副本目录与下载临时文件。
 // 正常退出的副本会自删目录（见 removeTempDirLater），这里兜底的是崩溃、
-// 被强杀等没走成自删的情况。仍被占用的（另一个实例正在用）删除会失败，忽略即可。
+// 被强杀等没走成清理的情况。仍被占用的（另一个实例正在用）删除会失败，忽略即可。
 func cleanStaleTempDirs() {
 	base := os.TempDir()
 	entries, err := os.ReadDir(base)
@@ -155,13 +161,21 @@ func cleanStaleTempDirs() {
 	}
 	self := selfDir()
 	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), tempDirPrefix) {
+		if !strings.HasPrefix(e.Name(), tempDirPrefix) {
 			continue
 		}
-		dir := filepath.Join(base, e.Name())
-		if samePath(dir, self) {
+		path := filepath.Join(base, e.Name())
+		if !e.IsDir() {
+			// 只挑陈旧的删：年轻的文件可能正被另一个实例下载并写入。
+			if info, err := e.Info(); err == nil && time.Since(info.ModTime()) < staleTempFileAge {
+				continue
+			}
+			_ = os.Remove(path)
+			continue
+		}
+		if samePath(path, self) {
 			continue // 正在就地运行，别把自己删了
 		}
-		_ = os.RemoveAll(dir)
+		_ = os.RemoveAll(path)
 	}
 }
