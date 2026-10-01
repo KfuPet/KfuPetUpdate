@@ -74,6 +74,8 @@ go build -trimpath -ldflags "-s -w -H=windowsgui" -o dist/KfuPetInstall.exe ./cm
 
 主界面点「安装」进入向导：**选择安装位置**（默认 `%ProgramFiles%\KfuPet`，可浏览自定义）→ **安装选项**（桌面/开始菜单快捷方式）→ 安装。安装目录整体替换（先落暂存目录再改名），下载后按发布版附带的 `KfuPet-manifest.json` 里的压缩包 sha256 校验，快捷方式经 PowerShell 调 `WScript.Shell` 创建——建在"所有用户"目录（公共桌面 / 公共开始菜单），全机用户都能看到。
 
+写盘环节都以**落盘**收尾：解压出的程序文件与常驻副本写完即 `FlushFileBuffers`，安装记录与卸载入口写完即 `RegFlushKey`（`winreg.flushKey` 自行绑定 advapi32，x/sys 未封装），修复流程补文件时同样先落盘再改名。这样"安装完成"后立刻断电（如虚拟机强制关机）也不会留下内容残缺的文件或丢掉安装状态。
+
 选择安装位置时**直接选中磁盘根目录会自动补成该盘下的 `KfuPet`**（选 `F:\` 即得到 `F:\KfuPet`），不会因为"程序文件不能散落在整块磁盘根下"而拦下用户——**选完立刻回填到本页**，路径随即显示为补好的值，仍可再点「浏览…」改。只有自动填充也解决不了的情况才报错：网络共享根，以及所选位置恰好就是 `KfuPet` 这个磁盘根（此时无法再补，补了还是根）。
 
 安装包已不再自带 .NET 运行时，因此启动时会在查询版本的同时检测本机是否装有 KfuPet 所需的 **.NET 桌面运行时**（Microsoft Windows Desktop Runtime 8.0.x）。缺失时，主界面点「安装」会先弹窗询问是否一并安装（默认勾选，取消则放弃本次安装）。安装时运行环境排在 KfuPet 本体之前，用 `/install /quiet /norestart` **静默安装、不弹任何窗口**。
@@ -253,7 +255,7 @@ KfuPet 侧须读同一处（见「卸载流程」）。
 - `internal/winapi/`：系统能力封装：单实例互斥锁、静默模式弹窗、进程启动/等待/强制终止、临时副本目录自删安排、PE 版本资源读取（`lock_*` / `notify_*` / `process_*` / `version_*` 四组）
 - `internal/uifx/`：界面动效小组件：整页淡入（`fade.go`）、元素渐隐/渐显遮罩（闪屏 Logo 渐隐后主界面 Logo 续上渐显，`cover.go`）、缓动曲线（`easing.go`）、跳动省略号（`dots.go`）、安装步骤清单（当前步脉冲、完成步画勾，`steps.go`）、结果标记（对勾/红叉描边 + 失败抖动，`mark.go`）、庆祝彩带（`confetti.go`）、流光进度条（`progress.go`）；控件在系统关闭动画时退回静态形态
 - `internal/dotnet/`：运行环境（.NET 桌面运行时）：共享框架目录探测与版本挑选（`Detect`）、静默安装（`InstallSilent`）、候选下载地址与手动下载引导地址
-- `internal/winreg/`：注册表读写：安装记录与标准卸载入口（写机器级 HKLM、读兼容 HKCU，固定 64 位视图；修复用只读 HKLM 的 `ReadMachineInstallRecord` 判断记录是否真的补到位，另提供 `ReadUninstallEntry` 逐字段比对，`ClearStartupEntry` 清 KfuPet 的开机自启项；`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
+- `internal/winreg/`：注册表读写：安装记录与标准卸载入口（写机器级 HKLM、读兼容 HKCU，固定 64 位视图；修复用只读 HKLM 的 `ReadMachineInstallRecord` 判断记录是否真的补到位，另提供 `ReadUninstallEntry` 逐字段比对，`ClearStartupEntry` 清 KfuPet 的开机自启项；写入后调 `RegFlushKey` 强制落盘，防强制断电丢记录；`types.go` 放 `InstallRecord` / `UninstallEntry` 两个数据类型，`registry_windows.go` 为实现）
 - `dist/`：打包输出目录（`go build -o dist/`，已在 `.gitignore` 忽略）
 
 ### 不提供离线安装（已移除）
