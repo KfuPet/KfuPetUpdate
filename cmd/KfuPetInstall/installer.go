@@ -951,5 +951,11 @@ func extractZipFile(f *zip.File, target string) error {
 		out.Close()
 		return err
 	}
+	// 落盘后再关：安装完成后若立刻断电（如虚拟机强制关机），只留在系统缓存里的
+	// 数据会丢，文件会以"大小正常、内容残缺"的形态留下来。
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
 	return out.Close()
 }

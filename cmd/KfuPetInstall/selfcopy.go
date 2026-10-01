@@ -52,6 +52,12 @@ func copyFile(src, dst string) error {
 		out.Close()
 		return err
 	}
+	// 写完先落盘再关闭：常驻副本是安装末尾写入的大文件，只停在系统缓存里时，
+	// 紧接着断电（如虚拟机强制关机）会把数据截断，留下一个内容残缺的坏 exe。
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
 	return out.Close()
 }
 

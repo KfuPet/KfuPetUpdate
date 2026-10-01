@@ -5,7 +5,9 @@ package winreg
 
 import (
 	"errors"
+	"syscall"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -121,7 +123,11 @@ func WriteInstallRecord(rec InstallRecord) error {
 	if err := k.SetStringValue(valueInstallPath, rec.InstallPath); err != nil {
 		return err
 	}
-	return k.SetStringValue(valueVersion, rec.DisplayVersion)
+	if err := k.SetStringValue(valueVersion, rec.DisplayVersion); err != nil {
+		return err
+	}
+	// 写完立即刷盘：这条记录是"已安装"的唯一依据，丢了会让界面退回"未安装"。
+	return flushKey(installRegistryPath)
 }
 
 // WriteUninstallEntry 写入机器级的 Windows 标准卸载入口。
@@ -151,7 +157,8 @@ func WriteUninstallEntry(e UninstallEntry) error {
 			return err
 		}
 	}
-	return nil
+	// 与安装记录同理：写完立即刷盘，断电也不至于丢。
+	return flushKey(uninstallEntryPath)
 }
 
 // ClearUninstallEntry 删除标准卸载入口；项本就不存在时视为成功。
@@ -181,6 +188,33 @@ func ClearStartupEntry() error {
 
 	if err := k.DeleteValue(startupValueName); err != nil && !errors.Is(err, registry.ErrNotExist) {
 		return err
+	}
+	return nil
+}
+
+// regFlushKeyProc 是 advapi32!RegFlushKey；x/sys 未封装这一函数，这里自行绑定。
+var regFlushKeyProc = windows.NewLazySystemDLL("advapi32.dll").NewProc("RegFlushKey")
+
+// flushKey 把指定键的最近改动立即写入磁盘。
+// 注册表默认惰性回写：写完很快就断电（如虚拟机强制关机）时，最近的改动可能丢失，
+// 表现为重启后安装记录消失、程序文件却还在。安装记录与卸载入口是必须落盘的少量
+// 关键数据，因此写完就刷一次；刷不动按错误上报，由调用方决定流程成败。
+func flushKey(path string) error {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	// 只为拿一个能刷新的句柄，访问权给到写；视图与写入时保持一致（固定 64 位）。
+	var h windows.Handle
+	if err := windows.RegOpenKeyEx(windows.HKEY_LOCAL_MACHINE, name, 0, registry.WRITE|regView, &h); err != nil {
+		return err
+	}
+	defer windows.RegCloseKey(h)
+
+	// RegFlushKey 直接返回 LSTATUS（Win32 错误码），不经过 GetLastError，
+	// 因此不看 Call 的第三个返回值，按错误码非 0 判断失败。
+	if r1, _, _ := regFlushKeyProc.Call(uintptr(h)); r1 != 0 {
+		return syscall.Errno(r1)
 	}
 	return nil
 }

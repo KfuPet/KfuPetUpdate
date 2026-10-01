@@ -459,6 +459,10 @@ func replaceFile(src, dst string) error {
 	if _, err := io.Copy(tmp, in); err != nil {
 		return err
 	}
+	// 与安装同样的落盘要求：修复完成后若立刻断电，补上的文件也不该是残缺的。
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
