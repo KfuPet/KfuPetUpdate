@@ -221,4 +221,4 @@ if ($installerEntry) {
 
 $uploads = @((Split-Path -Leaf $Zip), 'KfuPet-manifest.json')
 if ($installerEntry) { $uploads += $installerEntry.name }
-Write-Host ("==> 上传提醒：{0} 需一起传到 GitHub 与 GitCode 的同一个 Release" -f ($uploads -join '、')) -ForegroundColor Yellow
+Write-Host ("==> 上传提醒：{0} 需一起传到 GitHub、GitCode 与 Gitee 的同一个 Release" -f ($uploads -join '、')) -ForegroundColor Yellow

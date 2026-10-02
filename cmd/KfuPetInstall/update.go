@@ -53,9 +53,16 @@ const (
 	gitcodeRepo  = "KfuPet"
 )
 
-// GitHub 源的超时收得比 GitCode 紧：国内直连 GitHub 常被阻断，干等下去只会拖慢回退到 GitCode 的速度。
-// 代价是 GitHub 可达但慢于这个值时会被判为失败、改由 GitCode 兜底——镜像若落后于主源，
-// 用户会被告知"已是最新"。
+// 紧急备用镜像仓库：https://gitee.com/lrht/kfu-pet
+// 同样只同步发行版附件；优先级最低，GitHub 与 GitCode 都不可用时才轮到它。
+const (
+	giteeOwner = "lrht"
+	giteeRepo  = "kfu-pet"
+)
+
+// GitHub 源的超时收得比国内镜像（GitCode / Gitee）紧：国内直连 GitHub 常被阻断，
+// 干等下去只会拖慢回退速度。代价是 GitHub 可达但慢于这个值时会被判为失败、
+// 改由国内镜像兜底——镜像若落后于主源，用户会被告知"已是最新"。
 const gitHubTimeout = 3 * time.Second
 
 // gitHubSource 从 GitHub Releases 获取最新版本信息。
@@ -261,7 +268,7 @@ func downloadManifest(ctx context.Context, art artifact) (*releaseManifest, erro
 	}
 	req.Header.Set("User-Agent", "KfuPetUpdate-Updater")
 
-	// 两个源的直链都会 302 到实际存储，需跟随重定向，因此用默认 client。
+	// 三个源的直链都会 302 到实际存储，需跟随重定向，因此用默认 client。
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -371,13 +378,86 @@ func (s *gitcodeSource) fetchLatest(ctx context.Context) (*releaseInfo, error) {
 	return rel, nil
 }
 
+// giteeSource 从 Gitee Releases 获取最新版本信息（最低优先级的紧急备用源）。
+// Gitee 的 v5 接口读取公开仓库无需鉴权，字段与 GitHub 大体一致，
+// 差异同样是三处：发布页地址需自行拼接、发布时间字段是 created_at、
+// 附件不提供 size 与 digest（下载侧对两者为 0/空都有兜底）。
+type giteeSource struct {
+	client *http.Client
+}
+
+func newGiteeSource() *giteeSource {
+	return &giteeSource{
+		client: &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+func (s *giteeSource) fetchLatest(ctx context.Context) (*releaseInfo, error) {
+	apiURL := fmt.Sprintf("https://gitee.com/api/v5/repos/%s/%s/releases/latest",
+		giteeOwner, giteeRepo)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "KfuPetUpdate-Updater")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Gitee API 返回状态码 %d", resp.StatusCode)
+	}
+
+	var data struct {
+		TagName   string `json:"tag_name"`
+		Body      string `json:"body"`
+		CreatedAt string `json:"created_at"`
+		Assets    []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	if data.TagName == "" {
+		return nil, fmt.Errorf("Gitee 响应中缺少 tag_name")
+	}
+
+	rel := &releaseInfo{
+		Version: data.TagName,
+		// Gitee 的发布版对象不含 html_url，按 tag 拼发布页地址。
+		ReleasePageURL: fmt.Sprintf("https://gitee.com/%s/%s/releases/tag/%s",
+			giteeOwner, giteeRepo, data.TagName),
+		ReleaseNotes: data.Body,
+	}
+	if t, err := time.Parse(time.RFC3339, data.CreatedAt); err == nil {
+		rel.PublishedAt = t
+	}
+	for _, a := range data.Assets {
+		if a.Name == "" || a.BrowserDownloadURL == "" {
+			continue
+		}
+		rel.Artifacts = append(rel.Artifacts, artifact{
+			Name:        a.Name,
+			DownloadURL: a.BrowserDownloadURL,
+		})
+	}
+	return rel, nil
+}
+
 // namedSource 是带名称的更新源，失败时用于输出可读的错误信息。
 type namedSource struct {
 	name   string
 	source updateSource
 }
 
-// updateChecker 依次尝试多个更新源：GitHub 优先，失败时回退到 GitCode 国内镜像。
+// updateChecker 依次尝试多个更新源：GitHub 优先，其次 GitCode 国内镜像，
+// 最后 Gitee 紧急备用。
 type updateChecker struct {
 	sources []namedSource
 }
@@ -387,6 +467,7 @@ func newUpdateChecker() *updateChecker {
 		sources: []namedSource{
 			{name: "GitHub", source: newGitHubSource()},
 			{name: "GitCode", source: newGitcodeSource()},
+			{name: "Gitee", source: newGiteeSource()},
 		},
 	}
 }

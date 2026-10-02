@@ -231,7 +231,7 @@ func resolveInstallerSource(ctx context.Context, rel *releaseInfo, report progre
 	if err != nil {
 		return installerSource{}, err
 	}
-	// 清单以选定源为优先。镜像源（GitCode）的接口不提供摘要，正是靠清单才能校验
+	// 清单以选定源为优先。镜像源（GitCode / Gitee）的接口不提供摘要，正是靠清单才能校验
 	// 从它下到的包；取不到清单时退回原有的逐级降级校验。
 	man, _ := fetchManifest(ctx, rel)
 	return installerSource{path: path, art: art, manifest: man, cleanup: func() { os.Remove(path) }}, nil
@@ -590,7 +590,7 @@ func probeOrder(ctx context.Context, candidates []artifact) []artifact {
 // probeCandidate 用 1 字节的 Range GET 探测单个直链是否可达。
 // 不用 HEAD：GitCode 的直链对 HEAD 一律返回 401（WAF 拦截该请求方法），
 // 会把可达的镜像误判成不可达，探测就起不到排序作用。
-// Range 的开销同样可以忽略：直链源按 206 只回 1 字节；万一对方忽略 Range 而回 200，
+// Range 的开销同样可以忽略：GitHub / GitCode 按 206 只回 1 字节；Gitee 忽略 Range 而回 200，
 // 读满 1 字节就关闭连接中止传输，不会把整个安装包拖下来。
 func probeCandidate(ctx context.Context, rawURL string) bool {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
@@ -603,7 +603,7 @@ func probeCandidate(ctx context.Context, rawURL string) bool {
 	req.Header.Set("User-Agent", "KfuPetUpdate-Updater")
 	req.Header.Set("Range", "bytes=0-0")
 
-	// 两个源的直链都会 302 到实际存储，需要跟随重定向，因此用下载客户端。
+	// 三个源的直链都会 302 到实际存储，需要跟随重定向，因此用下载客户端。
 	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return false
