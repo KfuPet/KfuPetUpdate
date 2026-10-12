@@ -1,7 +1,7 @@
 //go:build windows
 
 // Package winapi 封装本程序用到的 Windows 系统能力：单实例锁与忙闲标记、
-// 系统弹窗、进程启动与等待。
+// 系统弹窗、进程启动与等待、系统地区读取。
 package winapi
 
 import (

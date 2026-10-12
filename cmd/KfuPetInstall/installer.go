@@ -225,7 +225,7 @@ func resolveInstallerSource(ctx context.Context, rel *releaseInfo, report progre
 	if err != nil {
 		return installerSource{}, err
 	}
-	// art 只用于校验，固定取选定源的产物（它带 sha256 摘要）；
+	// art 只用于校验，固定取选定源的产物（其接口附带摘要时用它核对，镜像源没有摘要）；
 	// 下载则按候选列表逐个尝试，可能最终来自镜像源。
 	path, err := downloadArtifact(ctx, rel.artifactsFor(), kindPackage, report)
 	if err != nil {

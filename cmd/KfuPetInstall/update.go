@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"kfupet-installer/internal/version"
+	"kfupet-installer/internal/winapi"
 	"net/http"
 	"runtime"
 	"strings"
@@ -47,22 +49,23 @@ const (
 )
 
 // 国内镜像仓库：https://gitcode.com/Lrht/KfuPet
-// 该仓库只同步发行版附件（不含源码），用于 GitHub 不可达时兜底。
+// 该仓库只同步发行版附件（不含源码），系统地区为国内时是首选源（见 preferredSources）。
 const (
 	gitcodeOwner = "Lrht"
 	gitcodeRepo  = "KfuPet"
 )
 
 // 紧急备用镜像仓库：https://gitee.com/lrht/kfu-pet
-// 同样只同步发行版附件；优先级最低，GitHub 与 GitCode 都不可用时才轮到它。
+// 同样只同步发行版附件；国内排在 GitCode 之后，国外排在最末尾。
 const (
 	giteeOwner = "lrht"
 	giteeRepo  = "kfu-pet"
 )
 
 // GitHub 源的超时收得比国内镜像（GitCode / Gitee）紧：国内直连 GitHub 常被阻断，
-// 干等下去只会拖慢回退速度。代价是 GitHub 可达但慢于这个值时会被判为失败、
-// 改由国内镜像兜底——镜像若落后于主源，用户会被告知"已是最新"。
+// 干等下去只会拖慢回退速度。代价是 GitHub 可达但慢于这个值时会被判为失败，
+// 它的版本也随之退出比较（见 check 的"取最新版本"）——镜像若落后于主源，
+// 用户会被告知"已是最新"。
 const gitHubTimeout = 3 * time.Second
 
 // gitHubSource 从 GitHub Releases 获取最新版本信息。
@@ -257,7 +260,7 @@ func fetchManifest(ctx context.Context, rel *releaseInfo) (*releaseManifest, err
 }
 
 // downloadManifest 从单个直链取回并解析清单。
-// 选定源（GitHub）会给出清单附件的摘要，据此确认取回的字节没有被截断或篡改。
+// 选定源的接口附带摘要时（目前只有 GitHub 提供）会据此确认取回的字节没有被截断或篡改。
 func downloadManifest(ctx context.Context, art artifact) (*releaseManifest, error) {
 	ctx, cancel := context.WithTimeout(ctx, manifestTimeout)
 	defer cancel()
@@ -456,27 +459,34 @@ type namedSource struct {
 	source updateSource
 }
 
-// updateChecker 依次尝试多个更新源：GitHub 优先，其次 GitCode 国内镜像，
-// 最后 Gitee 紧急备用。
+// updateChecker 依次尝试多个更新源：顺序随当前地区而定（见 preferredSources）。
 type updateChecker struct {
 	sources []namedSource
 }
 
 func newUpdateChecker() *updateChecker {
-	return &updateChecker{
-		sources: []namedSource{
-			{name: "GitHub", source: newGitHubSource()},
-			{name: "GitCode", source: newGitcodeSource()},
-			{name: "Gitee", source: newGiteeSource()},
-		},
-	}
+	return &updateChecker{sources: preferredSources()}
 }
 
-// check 并发查询全部更新源，返回以第一个成功源为准的发布信息。
-// 并发只为省掉串行等待：选定源仍由 sources 的顺序决定，与谁先返回无关。
-// 其余源的同名产物收进 Mirrors，供下载层在某个源连不上时换源；
-// 版本号与选定源不一致的源直接丢弃——镜像比主源旧时若照用它的直链，
-// 会下到与所报版本不符的包。
+// preferredSources 按当前地区给出更新源的优先顺序。
+// 国内直连 GitHub 常被阻断或龟速，因此系统地区为中国大陆/香港/澳门时把 GitCode
+// 排在最前（Gitee 次之、GitHub 兜底）；其余地区维持原样：GitHub 优先、国内镜像依次兜底。
+// 顺序只决定"谁是选定源"（报谁的版本、下载候选谁排前面），三个源始终并发查询，
+// 排在后面的源只是退居镜像位，不会因此不查，换序也就不额外花时间。
+func preferredSources() []namedSource {
+	github := namedSource{name: "GitHub", source: newGitHubSource()}
+	gitcode := namedSource{name: "GitCode", source: newGitcodeSource()}
+	gitee := namedSource{name: "Gitee", source: newGiteeSource()}
+	if winapi.IsChinaRegion() {
+		return []namedSource{gitcode, gitee, github}
+	}
+	return []namedSource{github, gitcode, gitee}
+}
+
+// check 并发查询全部更新源，返回以最新版本为准的发布信息。
+// 并发只为省掉串行等待：选定源由 sources 的顺序决定，与谁先返回无关。
+// 选定源取"最新版本内优先级最高的源"，其余源的同名产物收进 Mirrors，
+// 供下载层在某个源连不上时换源。
 func (c *updateChecker) check(ctx context.Context) (*releaseInfo, error) {
 	// 每个 goroutine 只写自己那一位，无需加锁。
 	type sourceResult struct {
@@ -494,6 +504,19 @@ func (c *updateChecker) check(ctx context.Context) (*releaseInfo, error) {
 	}
 	wg.Wait()
 
+	// 先在查询成功的源里比出最新版本号；一个都没成功时为空串。
+	// 不能直接拿第一个成功的源当选定源：国内模式下排在最前的是国内镜像，
+	// 镜像若还没同步到主源刚发布的版本，只认它就会把新版本误报成"已是最新"。
+	newest := ""
+	for i := range c.sources {
+		if results[i].err != nil || results[i].rel == nil {
+			continue
+		}
+		if newest == "" || version.Compare(results[i].rel.Version, newest) > 0 {
+			newest = results[i].rel.Version
+		}
+	}
+
 	// 按源优先级归集结果，而不是按返回先后。
 	var (
 		primary *releaseInfo
@@ -505,16 +528,18 @@ func (c *updateChecker) check(ctx context.Context) (*releaseInfo, error) {
 			fails = append(fails, fmt.Sprintf("%s源：%v", ns.name, results[i].err))
 			continue
 		}
-		if results[i].rel == nil {
+		rel := results[i].rel
+		if rel == nil {
 			continue // 该源暂无数据，跳过
 		}
+		if version.Compare(rel.Version, newest) != 0 {
+			continue // 落后于最新版本的源直接丢弃：照用它的直链会下到与所报版本不符的包
+		}
 		if primary == nil {
-			primary = results[i].rel // 第一个成功的源就是选定源
+			primary = rel // 最新版本内优先级最高的源就是选定源
 			continue
 		}
-		if results[i].rel.Version == primary.Version {
-			mirrors = append(mirrors, results[i].rel.Artifacts...)
-		}
+		mirrors = append(mirrors, rel.Artifacts...)
 	}
 
 	if primary == nil {
