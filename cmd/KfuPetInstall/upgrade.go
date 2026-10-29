@@ -19,8 +19,8 @@ import (
 // 保存状态、释放资源的那点时间。等待本身可打断：进程一退出立即继续，不干等满。
 const upgradeWaitTimeout = 4 * time.Second
 
-// upgradeKillWaitTimeout 是强杀桌宠后，等待其映像释放的最长时间。
-const upgradeKillWaitTimeout = 5 * time.Second
+// killWaitTimeout 是强杀桌宠后，等待其映像释放的最长时间。
+const killWaitTimeout = 5 * time.Second
 
 // 升级流程特有的两个阶段；其后的阶段与安装完全一致（见 upgradeStages）。
 const (
@@ -149,7 +149,7 @@ func waitTargetsExit(ctx context.Context, pids []int, confirmKill killConfirmFun
 			return fmt.Errorf("终止 KfuPet 进程失败：%w", err)
 		}
 		// 强杀后映像释放还要一点时间，等它退出再继续替换目录。
-		winapi.WaitProcessExitTimeout(pid, upgradeKillWaitTimeout)
+		winapi.WaitProcessExitTimeout(pid, killWaitTimeout)
 	}
 	return nil
 }

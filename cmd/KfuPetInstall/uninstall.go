@@ -6,7 +6,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"time"
 
+	"kfupet-installer/internal/winapi"
 	"kfupet-installer/internal/winreg"
 )
 
@@ -69,6 +71,34 @@ func dirSizeKB(dir string) uint32 {
 		return math.MaxUint32
 	}
 	return uint32(kb)
+}
+
+// terminateKfuPet 强制终止正在运行的 KfuPet，并等它的映像释放。
+// 只有用户在「KfuPet 正在运行」的询问里点了「强制终止」才会走到这里。
+// 杀完必须确认进程真的退出：映像不释放，紧接着的删除安装目录仍会失败。
+func terminateKfuPet(installDir string) error {
+	deadline := time.Now().Add(killWaitTimeout)
+	for {
+		pid := winapi.FindOtherProcessPID([]string{executableName})
+		if pid == 0 {
+			// 进程列表里没有 KfuPet：要么它刚好自己退了，要么占用来自别处（如杀软）。
+			// 后者不能当成已解决，否则调用方会反复弹询问框。
+			if kfuPetRunning(installDir) {
+				return fmt.Errorf("未找到运行中的 KfuPet 进程，但安装目录仍被占用，请稍后再试")
+			}
+			return nil
+		}
+		if err := winapi.KillProcess(pid); err != nil {
+			return fmt.Errorf("终止 KfuPet 进程失败：%w", err)
+		}
+		winapi.WaitProcessExitTimeout(pid, killWaitTimeout)
+		if !kfuPetRunning(installDir) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("KfuPet 仍在运行，请手动退出后再卸载")
+		}
+	}
 }
 
 // uninstallKfuPet 卸载 KfuPet，返回被降级为警告的问题。

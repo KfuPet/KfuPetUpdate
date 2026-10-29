@@ -552,6 +552,20 @@ func confirmUninstall(w fyne.Window, onConfirmed func(keepUserData bool)) {
 		}, w)
 }
 
+// confirmKillKfuPet 询问是否强制终止正在运行的 KfuPet，以便继续卸载。
+// 不在未经同意时强杀：桌宠可能有还没落盘的状态。
+func confirmKillKfuPet(w fyne.Window, onConfirmed func()) {
+	note := widget.NewLabel("KfuPet 正在运行，卸载前需要先关闭它。\n是否强制终止进程并继续卸载？未保存的内容可能丢失。")
+	note.Wrapping = fyne.TextWrapWord
+
+	dialog.ShowCustomConfirm("KfuPet 正在运行", "强制终止", "取消", note,
+		func(confirmed bool) {
+			if confirmed {
+				onConfirmed()
+			}
+		}, w)
+}
+
 // confirmInstallEnv 在缺少运行环境时询问是否一并安装，默认勾选。
 // 「继续」带着勾选结果进入安装向导，「取消」则放弃本次安装、留在主界面。
 func confirmInstallEnv(w fyne.Window, onChoice func(withEnv bool)) {
@@ -1228,6 +1242,24 @@ func runGUI(cmd command) {
 	startUninstall = func(keepUserData bool) {
 		installDir := state.st.Path
 		if installDir == "" {
+			return
+		}
+
+		// KfuPet 正在运行时它的 exe 映像被占用，安装目录删不掉。
+		// 先问用户是否强杀，同意后等它真正退出，再接着走下面流程。
+		if kfuPetRunning(installDir) {
+			confirmKillKfuPet(w, func() {
+				go func() {
+					err := terminateKfuPet(installDir)
+					fyne.Do(func() {
+						if err != nil {
+							dialog.ShowError(err, w)
+							return
+						}
+						startUninstall(keepUserData)
+					})
+				}()
+			})
 			return
 		}
 
